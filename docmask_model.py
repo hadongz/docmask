@@ -161,7 +161,7 @@ def predict(model):
 
 if __name__ == "__main__": 
     model = docmask_model()
-    # model = keras.models.load_model("./output/model.keras")
+    # model = keras.models.load_model("./output/model_14_20.570366.keras")
     train(model, epoch=500)
     # keras.utils.plot_model(model, show_shapes=True)
     # debug_model(model)

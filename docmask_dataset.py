@@ -97,7 +97,6 @@ class DocMaskDataset:
             mask = self.img_rotate(mask, angle, fill_mode='constant')
 
         mask /= 255.0
-        print(class_label)
         return ({"img_input": img}, {"segmentation_output": mask, "classification_output": class_label})
 
     def img_rotate(self, image, degrees, fill_mode='reflect'):
