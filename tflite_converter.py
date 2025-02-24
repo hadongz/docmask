@@ -26,7 +26,7 @@ def predict_tflite_model(model_name):
         for output in output_details:
             output_data.append(interpreter.get_tensor(output['index']))
 
-        output = output_data[0][0]
+        output = output_data[1][0]
         output = cv2.normalize(output, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         output = cv2.resize(output, (224, 224))
         cv2.imshow("Image", img_show)
@@ -62,7 +62,7 @@ def predict_tflite_model_video(model_name):
         for output in output_details:
             output_data.append(interpreter.get_tensor(output['index']))
 
-        output = output_data[0][0]
+        output = output_data[1][0]
         output = cv2.normalize(output, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         output = cv2.resize(output, (224, 224))
 
@@ -81,5 +81,6 @@ def convert_to_tflite(model_name):
         f.write(tflite_model)
 
 if __name__ == "__main__":
-    # convert_to_tflite("unet_model_sobel_loss")
-    predict_tflite_model_video("unet_model_sobel_loss")
+    # convert_to_tflite("docmask_0_038681")
+    # predict_tflite_model("docmask_0_038681")
+    predict_tflite_model_video("docmask_0_038681")

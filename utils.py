@@ -1,3 +1,4 @@
+import os
 
 def change_last_line():
     with open(f"./labels/labels_with_corners.txt", "r") as f:
@@ -11,5 +12,7 @@ def change_last_line():
                 fn.write(','.join(split))
 
 def cat_model_summary(s):
+    directory = os.path.join("logs")
+    os.makedirs(directory, exist_ok=True)
     with open('./logs/model_summary.txt','w') as f:
         print(s, file=f)
