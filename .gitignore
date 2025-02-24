@@ -5,6 +5,7 @@ train_datasets/
 output/
 logs/
 saved_model/
+tensorboard/
 
 ### macOS ###
 # General

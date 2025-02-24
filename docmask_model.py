@@ -4,6 +4,7 @@ import os
 import cv2
 import numpy as np
 from docmask_dataset import DocMaskDataset
+from utils import cat_model_summary
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
@@ -25,52 +26,48 @@ def convolution_block(
     x = keras.layers.BatchNormalization()(x)
     return keras.layers.ReLU()(x)
 
-def unet_like_model(image_size=224):
+def docmask_model(image_size=224):
     # Encoder (MobileNetV3Large)
     backbone = keras.applications.MobileNetV3Large(
-        input_shape=(image_size, image_size, 3),
+        input_tensor=keras.layers.Input((224, 224, 3), name="img_input"),
         include_top=False,
         weights="imagenet",
         include_preprocessing=False
     )
     
-    # Verified skip connections
+    # Skip connections (verified layer names)
     skip_connections = [
-        backbone.get_layer("expanded_conv_2_depthwise").output,   # 56x56 (72 channels)
-        backbone.get_layer("expanded_conv_6_depthwise").output,   # 14x14 (240 channels)
-        backbone.get_layer("expanded_conv_12_depthwise").output,  # 7x7 (672 channels)
+        backbone.get_layer("expanded_conv_2_depthwise").output,   # 56x56
+        backbone.get_layer("expanded_conv_6_depthwise").output,   # 14x14
+        backbone.get_layer("expanded_conv_12_depthwise").output,  # 7x7
     ]
     
-    # Bridge layer (last encoder output)
-    bridge = backbone.output  # Expected to be 7x7 with 672 channels
+    bridge = backbone.output  # 7x7 with 960 channels (not 672)
 
-    # Decoder configuration
-    decoder_filters = [256, 128, 64]  # Filter sizes for each decoder stage
+    # Decoder
+    decoder_filters = [256, 128, 64]
     x = bridge
     
-    # Reverse skip connections to go from deep to shallow
     for i, (skip, filters, stride) in enumerate(zip(reversed(skip_connections), decoder_filters, [1, 2, 4])):
-        # Step 1: Upsample previous output
         x = keras.layers.Conv2DTranspose(filters, 3, strides=stride, padding="same")(x)
-        
-        # Step 2: Adjust skip connection channels to match decoder features
         skip = keras.layers.Conv2D(filters, 1, padding="same")(skip)
-        
-        # Step 3: Concatenate with processed skip connection
         x = keras.layers.Concatenate()([x, skip])
-        
-        # Step 4: Process combined features
         x = convolution_block(x, filters)
 
     # Final upsampling to original image size
     x = keras.layers.UpSampling2D(size=(4, 4), interpolation="bilinear")(x)  # 56x56 -> 224x224
     x = convolution_block(x, 32)
-    outputs = keras.layers.Conv2D(1, 1, activation="sigmoid")(x)
+    segmentation_output = keras.layers.Conv2D(1, 1, activation="sigmoid", name="segmentation_output")(x)
+
+    x2 = keras.layers.GlobalAveragePooling2D()(bridge)
+    x2 = keras.layers.Dense(128, activation="relu")(x2)
+    x2 = keras.layers.Dropout(0.5)(x2)  # Regularization
+    classification_output = keras.layers.Dense(1, activation="sigmoid", name="classification_output")(x2)
     
-    return keras.Model(backbone.input, outputs)
+    return keras.Model(backbone.input, [segmentation_output, classification_output])
 
 @keras.saving.register_keras_serializable()
-def hybrid_loss(y_true, y_pred, alpha=0.333, beta=0.334):
+def hybrid_loss(y_true, y_pred):
     # 1. Dice Loss
     intersection = tf.reduce_sum(y_true * y_pred)
     union = tf.reduce_sum(y_true) + tf.reduce_sum(y_pred)
@@ -84,29 +81,63 @@ def hybrid_loss(y_true, y_pred, alpha=0.333, beta=0.334):
     edge_pred = tf.abs(tf.image.sobel_edges(y_pred))
     edge_loss = tf.reduce_mean(tf.square(edge_true - edge_pred))
     
-    return alpha * bce_loss + beta * dice_loss + (1 - alpha - beta) * edge_loss
+    return 0.3 * bce_loss + 0.5 * dice_loss + 0.2 * edge_loss
 
-def visualize_feature_maps(features, orig_img):
-    features = np.array(features)
-    feature_maps = features[0]
+def train(model, epoch=10):
+    print(model.summary())
+    model.summary(print_fn=cat_model_summary)
+    dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=32)
+    train_ds, val_ds = dataset.load()
+    callbacks = [
+        keras.callbacks.ModelCheckpoint(filepath='./output/model_{epoch:02d}_{val_loss:.6f}.keras', save_best_only=True),
+        keras.callbacks.TensorBoard(log_dir='./tensorboard'),
+        keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=10),
+        keras.callbacks.CSVLogger("./logs/training.log", separator=",", append=False)
+    ]
 
-    normalized_feature_maps = []
-    for i in range(feature_maps.shape[-1]):
-        feature_map = feature_maps[:, :, i]
-        
-        normalized_map = (feature_map - np.min(feature_map)) / (np.max(feature_map) - np.min(feature_map) + 1e-8)
-        
-        normalized_map = (normalized_map * 255).astype(np.uint8)
-        normalized_feature_maps.append(normalized_map)
+    loss = {
+        "segmentation_output": hybrid_loss, 
+        "classification_output": keras.losses.binary_crossentropy
+    }
 
-    normalized_feature_maps = np.array(normalized_feature_maps)
+    loss_weights = {
+        "segmentation_output": 1.0, 
+        "classification_output": 1.0
+    }
 
-    average_map = np.mean(normalized_feature_maps, axis=0).astype(np.uint8)
-    # average_map = cv2.resize(average_map, (224, 224))
-    cv2.imshow("Average Feature Map", average_map)
-    cv2.imshow("Original Image", orig_img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    metrics = {
+        "segmentation_output": ["accuracy"],
+        "classification_output": ["accuracy"]
+    }
+
+    model.compile(optimizer="adam", loss=loss, loss_weights=loss_weights, metrics=metrics, run_eagerly=True)
+    model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks)
+    model.save("./output/final_model.keras")
+
+def debug_model(model):
+    print(model.summary())
+    model.summary(print_fn=cat_model_summary)
+    dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=1)
+    train_ds, val_ds = dataset.load()
+    for x, y in train_ds.take(3):
+        image = x["img_input"][0].numpy()
+        image = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+        print(y["classification_output"])
+
+        output = model(x)
+        mask = output[0][0].numpy()
+        mask = cv2.normalize(mask, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        mask = cv2.resize(mask, (224, 224))
+
+        class_pred = output[1][0].numpy()
+        cv2.putText(image, f"{class_pred}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
+
+        cv2.imshow("Image", image)
+        cv2.imshow("Mask", mask)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
 def predict(model):
     for i in range(len(os.listdir("./predict_datasets"))):
@@ -118,55 +149,20 @@ def predict(model):
         img2 = np.expand_dims(img2, axis=0)
 
         result = model(img2, training=False)
-        result = result[0].numpy()
-        result = cv2.normalize(result, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        mask = result[0][0].numpy()
+        class_pred = result[1][0].numpy()
+        mask = cv2.normalize(mask, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        cv2.putText(img_show, f"{class_pred}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
 
-        cv2.imshow("Average Feature Map", result)
+        cv2.imshow("Average Feature Map", mask)
         cv2.imshow("Original Image", img_show)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
-def train(model, loss, epoch=10):
-    print(model.summary())
-    dataset = DocMaskDataset(txt_path="./labels/receipt_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=32)
-    train_ds, val_ds = dataset.load()
-    callbacks = [
-        keras.callbacks.ModelCheckpoint(filepath='./output/model_{epoch:02d}_{val_loss:.6f}.keras', save_best_only=True),
-        keras.callbacks.TensorBoard(log_dir='./logs'),
-        keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5)
-    ]
-    model.compile(optimizer="adam", loss=loss, metrics=["accuracy"])
-    model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks)
-    model.save("./output/final_model.keras")
-
-def cat_model_summary(s):
-    with open('model_summary.txt','w') as f:
-        print(s, file=f)
-
-def debug_model(model):
-    print(model.summary())
-    dataset = DocMaskDataset(txt_path="./labels/receipt_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=1)
-    train_ds, val_ds = dataset.load()
-    for x, y in train_ds.take(3):
-        image = x[0].numpy()
-        image = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
-        output = model(x)
-        output = output[0].numpy()
-        output = cv2.normalize(output, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        output = cv2.resize(output, (224, 224))
-        cv2.imshow("Image", image)
-        cv2.imshow("Mask", output)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-
 if __name__ == "__main__": 
-    # model = docmask_model()
-    # model = keras.models.load_model("./output/unet_model.keras")
-    model = unet_like_model()
-    # model.summary(print_fn=cat_model_summary)
-    train(model, hybrid_loss, epoch=200)
+    model = docmask_model()
+    # model = keras.models.load_model("./output/model.keras")
+    train(model, epoch=500)
+    # keras.utils.plot_model(model, show_shapes=True)
     # debug_model(model)
     # predict(model)

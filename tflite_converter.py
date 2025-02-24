@@ -3,9 +3,10 @@ import keras
 import cv2
 import os
 import numpy as np
+from docmask_model import hybrid_loss
 
 def predict_tflite_model(model_name):
-    interpreter = tf.lite.Interpreter(model_name)
+    interpreter = tf.lite.Interpreter(f"./saved_model/{model_name}.tflite")
     interpreter.allocate_tensors()
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
@@ -35,7 +36,7 @@ def predict_tflite_model(model_name):
 
 def predict_tflite_model_video(model_name):
     cam = cv2.VideoCapture(0)
-    interpreter = tf.lite.Interpreter(model_name)
+    interpreter = tf.lite.Interpreter(f"./saved_model/{model_name}.tflite")
     interpreter.allocate_tensors()
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
@@ -71,10 +72,14 @@ def predict_tflite_model_video(model_name):
         if k == ord('q'):
             break
 
-def convert_to_tflite():
-    model = keras.models.load_model("./output/unet_model.keras")
+def convert_to_tflite(model_name):
+    model = keras.models.load_model(f"./saved_model/{model_name}.keras")
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     tflite_model = converter.convert()
-    with open('unet_model.tflite', 'wb') as f:
+    with open(f"./saved_model/{model_name}.tflite", 'wb') as f:
         f.write(tflite_model)
+
+if __name__ == "__main__":
+    # convert_to_tflite("unet_model_sobel_loss")
+    predict_tflite_model_video("unet_model_sobel_loss")

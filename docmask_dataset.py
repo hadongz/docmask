@@ -38,11 +38,18 @@ class DocMaskDataset:
         mask_path = self.img_folder + parts[1]
         img = self.decode_img(img_path, self.img_size)
         mask = self.decode_img(mask_path, self.img_size, channels=1)
-        return img, mask
+        class_label = tf.strings.to_number(parts[2])
+        return ({"img_input": img}, {"segmentation_output": mask, "classification_output": class_label})
     
-    def augment(self, img, mask):
+    def augment(self, img, labels):
         """Apply augmentation to image and adjust corner coordinates"""
         
+        # img = data[0]["img_input"]
+        # labels = data[1]
+        img = img["img_input"]
+        mask = labels["segmentation_output"]
+        class_label = labels["classification_output"]
+
         # Random brightness
         if tf.random.uniform([]) < 0.5:
             img = tf.image.random_brightness(img, 0.2)
@@ -78,8 +85,8 @@ class DocMaskDataset:
             
             # Apply zero padding
             img_size = self.img_size
-            img = tf.pad(img, padding, mode="REFLECT")
-            mask = tf.pad(mask, padding, mode="REFLECT")
+            img = tf.pad(img, padding, mode="CONSTANT")
+            mask = tf.pad(mask, padding, mode="CONSTANT")
             img = tf.image.resize(img, [img_size, img_size])
             mask = tf.image.resize(mask, [img_size, img_size])
         
@@ -89,7 +96,9 @@ class DocMaskDataset:
             img = self.img_rotate(img, angle)
             mask = self.img_rotate(mask, angle, fill_mode='constant')
 
-        return img, mask / 255.0
+        mask /= 255.0
+        print(class_label)
+        return ({"img_input": img}, {"segmentation_output": mask, "classification_output": class_label})
 
     def img_rotate(self, image, degrees, fill_mode='reflect'):
         # Convert from degrees to radians.
@@ -167,12 +176,15 @@ class DocMaskDataset:
 if __name__ == "__main__":
     import cv2
 
-    dataset = DocMaskDataset(txt_path="./labels/labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=1)
+    dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=1)
     train_ds, val_ds = dataset.load()
 
     for x, y in train_ds.take(10):
-        image = x[0].numpy().astype(np.uint8)
-        mask = y[0].numpy().astype(np.uint8)
+        image = x["img_input"][0].numpy().astype(np.uint8)
+        mask = y["segmentation_output"][0].numpy().astype(np.uint8)
+        mask *= 255
+        classification = y["classification_output"][0].numpy()
+        cv2.putText(mask, f"{classification}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         cv2.imshow("Image", image)
         cv2.imshow("Mask", mask)
