@@ -72,6 +72,8 @@ def init_args():
 
     for subparser in [train, train_v2, debug, predict]:
         subparser.add_argument("-mp", "--model_path", help="model path")
+        subparser.add_argument("--v1", action='store_true')
+        subparser.add_argument("--v2", action='store_true')
     return parser
 
 
@@ -81,15 +83,16 @@ if __name__ == "__main__":
 
     if args.model_path:
         model = keras.models.load_model(args.model_path)
-    else:
+    elif args.v1:
         model = docmask_model()
+    elif args.v2:
+        model = docmask_model_v2()
 
     if args.command == "train":
         epoch = args.epoch
         need_compile = args.no_compile
         train(model, epoch=epoch, need_compile=need_compile)
     elif args.command == "train_v2":
-        model = docmask_model_v2()
         epoch = args.epoch
         train_v2(model, epoch=epoch)
     elif args.command == "debug":

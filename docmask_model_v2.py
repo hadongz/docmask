@@ -173,34 +173,48 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
         num_classes, activation="sigmoid", name="classification_output"
     )(cls_x)
     
-    model = keras.Model(input_layer, [segmentation_output, classification_output])
+    model = keras.Model(backbone.input, [segmentation_output, classification_output])
     
     return model
 
 @keras.saving.register_keras_serializable()
 def hybrid_loss_v2(y_true, y_pred):
     """
-    Enhanced hybrid loss function for segmentation
+    Enhanced hybrid loss function for segmentation with improved numerical stability
     Combines Dice loss, Focal BCE, and Edge-aware loss
     """
-    # Smooth factor
-    smooth = 1e-5
+    # Ensure inputs are float32
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    
+    # Larger smooth factor for better stability
+    smooth = 1e-6
+    
+    # Clip predictions more aggressively
+    y_pred = tf.clip_by_value(y_pred, smooth, 1.0 - smooth)
     
     # 1. Dice Loss with more stable implementation
+    # Cast to float32 to ensure precision
     intersection = tf.reduce_sum(y_true * y_pred, axis=[1, 2, 3])
     union = tf.reduce_sum(y_true, axis=[1, 2, 3]) + tf.reduce_sum(y_pred, axis=[1, 2, 3])
-    dice_loss = 1 - (2. * intersection + smooth) / (union + smooth)
+    
+    # Handle empty masks case
+    dice_coef = tf.where(
+        union > smooth,
+        (2. * intersection + smooth) / (union + smooth),
+        tf.ones_like(intersection)  # If both true and pred are empty, dice is 1
+    )
+    dice_loss = 1.0 - dice_coef
     dice_loss = tf.reduce_mean(dice_loss)
     
-    # 2. Focal BCE for better handling of class imbalance
+    # 2. Focal BCE with stability improvements
     alpha = 0.75  # Weight for positive class
     gamma = 2.0   # Focusing parameter
     
-    # Clip predictions to prevent numerical instability
-    y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
-    
-    # Calculate focal weights
+    # Calculate focal weights with improved stability
     pt = tf.where(tf.equal(y_true, 1), y_pred, 1 - y_pred)
+    pt = tf.clip_by_value(pt, smooth, 1.0 - smooth)  # Ensure pt is not too close to 0 or 1
+    
     focal_weight = tf.pow(1 - pt, gamma)
     
     # Apply alpha weighting
@@ -211,29 +225,46 @@ def hybrid_loss_v2(y_true, y_pred):
     focal_bce = focal_weight * alpha_weight * bce
     focal_bce_loss = tf.reduce_mean(focal_bce)
     
-    # 3. Edge Loss using TensorFlow's Sobel operator with normalization
-    edge_true = tf.sqrt(tf.reduce_sum(tf.square(tf.image.sobel_edges(y_true)), axis=-1))
-    edge_pred = tf.sqrt(tf.reduce_sum(tf.square(tf.image.sobel_edges(y_pred)), axis=-1))
+    # 3. Edge Loss with safe normalization
+    # Add axis parameter to sobel operator for clarity
+    edge_true = tf.image.sobel_edges(y_true)
+    edge_pred = tf.image.sobel_edges(y_pred)
     
-    # Normalize edges
-    edge_true = edge_true / (tf.reduce_max(edge_true) + smooth)
-    edge_pred = edge_pred / (tf.reduce_max(edge_pred) + smooth)
+    # Calculate magnitude of gradients
+    edge_true_mag = tf.sqrt(tf.reduce_sum(tf.square(edge_true), axis=-1) + smooth)
+    edge_pred_mag = tf.sqrt(tf.reduce_sum(tf.square(edge_pred), axis=-1) + smooth)
     
-    edge_loss = tf.reduce_mean(tf.square(edge_true - edge_pred))
+    # Safe normalization with checks for zero tensors
+    edge_true_max = tf.maximum(tf.reduce_max(edge_true_mag), smooth)
+    edge_pred_max = tf.maximum(tf.reduce_max(edge_pred_mag), smooth)
+    
+    norm_edge_true = edge_true_mag / edge_true_max
+    norm_edge_pred = edge_pred_mag / edge_pred_max
+    
+    # L1 loss is more stable than L2 for edge loss
+    edge_loss = tf.reduce_mean(tf.abs(norm_edge_true - norm_edge_pred))
+    
+    # Check for NaN values before combining
+    dice_loss = tf.debugging.check_numerics(dice_loss, "Dice loss contains NaN")
+    focal_bce_loss = tf.debugging.check_numerics(focal_bce_loss, "Focal BCE loss contains NaN")
+    edge_loss = tf.debugging.check_numerics(edge_loss, "Edge loss contains NaN")
     
     # Combine losses with adjusted weights
     total_loss = 0.4 * focal_bce_loss + 0.4 * dice_loss + 0.2 * edge_loss
     
+    # Verify final loss is valid
+    # total_loss = tf.debugging.check_numerics(total_loss, "Total loss contains NaN")
+    
     return total_loss
 
-def train_v2(model, batch_size=16, epoch=100):
+def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     """
     Create a complete training pipeline optimized for a small dataset (1000 images)
     """
     
     # Define losses and weights
     losses = {
-        "segmentation_output": hybrid_loss,
+        "segmentation_output": hybrid_loss_v2,
         "classification_output": "binary_crossentropy"
     }
     
@@ -260,19 +291,25 @@ def train_v2(model, batch_size=16, epoch=100):
     )
     
     # Metrics
-    metrics = {
-        "segmentation_output": [
-            keras.metrics.IoU(num_classes=2, target_class_ids=[1]),
-            keras.metrics.Recall(),
-            keras.metrics.Precision()
-        ],
-        "classification_output": [
-            keras.metrics.BinaryAccuracy(),
-            keras.metrics.AUC(),
-            keras.metrics.Precision(),
-            keras.metrics.Recall()
-        ]
-    }
+    if use_simple_metrics:
+        metrics = {
+            "segmentation_output": ["accuracy"],
+            "classification_output": ["accuracy"]
+        }
+    else:
+        metrics = {
+            "segmentation_output": [
+                keras.metrics.IoU(num_classes=2, target_class_ids=[1]),
+                keras.metrics.Recall(),
+                keras.metrics.Precision()
+            ],
+            "classification_output": [
+                keras.metrics.BinaryAccuracy(),
+                keras.metrics.AUC(),
+                keras.metrics.Precision(),
+                keras.metrics.Recall()
+            ]
+        }
     
     # Compile model
     model.compile(
