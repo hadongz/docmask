@@ -57,6 +57,35 @@ def predict(model):
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
+def predict_video(model):
+    cam = cv2.VideoCapture(0)
+
+    cv2.namedWindow("show")
+    cv2.namedWindow("img")
+
+    while True:
+        ret, img = cam.read()
+        if not ret:
+            print("failed to grab frame")
+            break
+        img = cv2.resize(img, (224, 224))
+        img_show = np.copy(img)
+        img = img.astype(np.float32)
+        img2 = img
+        img2 = np.expand_dims(img2, axis=0)
+
+        result = model(img2, training=False)
+        mask = result[0][0].numpy()
+        class_pred = result[1][0].numpy()
+        mask = cv2.normalize(mask, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        cv2.putText(img_show, f"{class_pred}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
+
+        cv2.imshow("show", mask)
+        cv2.imshow("img", img_show)
+        k = cv2.waitKey(1)
+        if k == ord('q'):
+            break
+
 def init_args():
     parser = argparse.ArgumentParser()
     subparser = parser.add_subparsers(dest="command", help="Subcommands")
@@ -69,8 +98,9 @@ def init_args():
 
     debug = subparser.add_parser("debug", help="debug the model")
     predict = subparser.add_parser("predict", help="predict the model")
+    predict_video = subparser.add_parser("predict_video", help="predict the model in video")
 
-    for subparser in [train, train_v2, debug, predict]:
+    for subparser in [train, train_v2, debug, predict, predict_video]:
         subparser.add_argument("-mp", "--model_path", help="model path")
         subparser.add_argument("--v1", action='store_true')
         subparser.add_argument("--v2", action='store_true')
@@ -82,7 +112,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.model_path:
-        model = keras.models.load_model(args.model_path)
+        model = keras.models.load_model(args.model_path, safe_mode=False)
     elif args.v1:
         model = docmask_model()
     elif args.v2:
@@ -99,3 +129,5 @@ if __name__ == "__main__":
         debug_model(model)
     elif args.command == "predict":
         predict(model)
+    elif args.command == "predict_video":
+        predict_video(model)
