@@ -1,8 +1,9 @@
 import tensorflow as tf
+import numpy as np
 import keras
 import os
 import cv2
-import numpy as np
+import argparse
 from docmask_dataset import DocMaskDataset
 from utils import cat_model_summary
 
@@ -160,11 +161,33 @@ def predict(model):
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
+def init_args():
+    parser = argparse.ArgumentParser()
+    subparser = parser.add_subparsers(dest="command", help="Subcommands")
+    train = subparser.add_parser("train", help="train the model")
+    train.add_argument("-e", "--epoch", type=int, default=500)
+    train.add_argument("--no_compile", action="store_false")
+    debug = subparser.add_parser("debug", help="debug the model")
+    predict = subparser.add_parser("predict", help="predict the model")
+    for subparser in [train, debug, predict]:
+        subparser.add_argument("-mp", "--model_path", help="model path")
+    return parser
+
+
 if __name__ == "__main__": 
-    model = docmask_model()
-    # model = keras.models.load_model("./output/final_model.keras")
-    # model = keras.models.load_model("./output/model_checkpoint_0_0403.keras")
-    train(model, epoch=500)
-    # keras.utils.plot_model(model, show_shapes=True)
-    # debug_model(model)
-    # predict(model)
+    parser = init_args()
+    args = parser.parse_args()
+
+    if args.model_path:
+        model = keras.models.load_model(args.model_path)
+    else:
+        model = docmask_model()
+
+    if args.command == "train":
+        epoch = args.epoch
+        need_compile = args.no_compile
+        train(model, epoch=epoch, need_compile=need_compile)
+    elif args.command == "debug":
+        debug_model(model)
+    elif args.command == "predict":
+        predict(model)

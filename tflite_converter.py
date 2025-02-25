@@ -1,8 +1,9 @@
 import tensorflow as tf
+import numpy as np
 import keras
 import cv2
 import os
-import numpy as np
+import argparse
 from docmask_model import hybrid_loss
 
 def predict_tflite_model(model_name):
@@ -83,7 +84,25 @@ def convert_to_tflite(model_name):
     with open(f"./saved_model/{model_name}.tflite", 'wb') as f:
         f.write(tflite_model)
 
+def init_args():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", help="Subcommands")
+    convert = subparsers.add_parser("convert", help="convert model to tflite")
+    predict_model = subparsers.add_parser("predict_model", help="predict tflite model to images")
+    predict_video = subparsers.add_parser("predict_video", help="preidct tflite model to cam")
+    for subparser in [convert, predict_model, predict_video]:
+        subparser.add_argument("-m", "--model_name", required=True, help="model name")
+    return parser
+
 if __name__ == "__main__":
-    # convert_to_tflite("docmask_0_0416")
-    # predict_tflite_model("docmask_0_0416")
-    predict_tflite_model_video("docmask_0_038681")
+    parser = init_args()
+    args = parser.parse_args()
+    model_name = args.model_name
+    if args.command == "convert":
+        convert_to_tflite(model_name)
+        predict_tflite_model(model_name)
+        predict_tflite_model_video(model_name)
+    elif args.command == "predict_model":
+        predict_tflite_model(model_name)
+    elif args.command == "predict_video":
+        predict_tflite_model_video(model_name)
