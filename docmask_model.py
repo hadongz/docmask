@@ -107,87 +107,11 @@ def train(model, epoch=10, need_compile=True):
         model.compile(optimizer="adam", loss=loss, loss_weights=loss_weights, metrics=metrics)
 
     callbacks = [
-        keras.callbacks.EarlyStopping(monitor="val_loss", patience=25, start_from_epoch=100),
+        keras.callbacks.EarlyStopping(monitor="val_loss", patience=15, start_from_epoch=100, verbose=1),
         keras.callbacks.ModelCheckpoint(filepath='./output/model_{epoch:02d}_{val_loss:.4f}.keras', save_best_only=True),
         keras.callbacks.TensorBoard(log_dir='./tensorboard'),
-        keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=15),
+        keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=8, min_lr=1e-6, verbose=1),
         keras.callbacks.CSVLogger("./logs/training.csv", separator=",", append=False)
     ]
-    model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks)
+    model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks, verbose=1)
     model.save("./output/final_model.keras")
-
-def debug_model(model):
-    print(model.summary())
-    model.summary(print_fn=cat_model_summary)
-    dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=1)
-    train_ds, val_ds = dataset.load()
-    for x, y in train_ds.take(3):
-        image = x["img_input"][0].numpy()
-        image = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
-        print(y["classification_output"])
-
-        output = model(x)
-        mask = output[0][0].numpy()
-        mask = cv2.normalize(mask, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        mask = cv2.resize(mask, (224, 224))
-
-        class_pred = output[1][0].numpy()
-        cv2.putText(image, f"{class_pred}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
-
-        cv2.imshow("Image", image)
-        cv2.imshow("Mask", mask)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-def predict(model):
-    for i in range(len(os.listdir("./predict_datasets"))):
-        img = cv2.imread(f"./predict_datasets/receipt-test-{i}.jpg")
-        img = cv2.resize(img, (224, 224))
-        img_show = np.copy(img)
-        img = img.astype(np.float32)
-        img2 = img
-        img2 = np.expand_dims(img2, axis=0)
-
-        result = model(img2, training=False)
-        mask = result[0][0].numpy()
-        class_pred = result[1][0].numpy()
-        mask = cv2.normalize(mask, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        cv2.putText(img_show, f"{class_pred}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
-
-        cv2.imshow("Average Feature Map", mask)
-        cv2.imshow("Original Image", img_show)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-def init_args():
-    parser = argparse.ArgumentParser()
-    subparser = parser.add_subparsers(dest="command", help="Subcommands")
-    train = subparser.add_parser("train", help="train the model")
-    train.add_argument("-e", "--epoch", type=int, default=500)
-    train.add_argument("--no_compile", action="store_false")
-    debug = subparser.add_parser("debug", help="debug the model")
-    predict = subparser.add_parser("predict", help="predict the model")
-    for subparser in [train, debug, predict]:
-        subparser.add_argument("-mp", "--model_path", help="model path")
-    return parser
-
-
-if __name__ == "__main__": 
-    parser = init_args()
-    args = parser.parse_args()
-
-    if args.model_path:
-        model = keras.models.load_model(args.model_path)
-    else:
-        model = docmask_model()
-
-    if args.command == "train":
-        epoch = args.epoch
-        need_compile = args.no_compile
-        train(model, epoch=epoch, need_compile=need_compile)
-    elif args.command == "debug":
-        debug_model(model)
-    elif args.command == "predict":
-        predict(model)
