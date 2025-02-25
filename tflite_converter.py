@@ -66,6 +66,9 @@ def predict_tflite_model_video(model_name):
         output = cv2.normalize(output, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         output = cv2.resize(output, (224, 224))
 
+        class_label = output_data[0][0]
+        cv2.putText(img_show, f"{class_label}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
+
         cv2.imshow("show", output)
         cv2.imshow("img", img_show)
         k = cv2.waitKey(1)
@@ -81,6 +84,6 @@ def convert_to_tflite(model_name):
         f.write(tflite_model)
 
 if __name__ == "__main__":
-    # convert_to_tflite("docmask_0_038681")
-    # predict_tflite_model("docmask_0_038681")
+    # convert_to_tflite("docmask_0_0416")
+    # predict_tflite_model("docmask_0_0416")
     predict_tflite_model_video("docmask_0_038681")

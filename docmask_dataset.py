@@ -75,24 +75,24 @@ class DocMaskDataset:
         # Random padding
         if tf.random.uniform([]) < 0.5:
             # Randomly sample padding sizes
-            top = tf.random.uniform((), minval=0, maxval=30, dtype=tf.int32)
-            bottom = tf.random.uniform((), minval=0, maxval=30, dtype=tf.int32)
-            left = tf.random.uniform((), minval=0, maxval=30, dtype=tf.int32)
-            right = tf.random.uniform((), minval=0, maxval=30, dtype=tf.int32)
+            top = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
+            bottom = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
+            left = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
+            right = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
             
             # Define padding
             padding = [[top, bottom], [left, right], [0, 0]]
             
             # Apply zero padding
             img_size = self.img_size
-            img = tf.pad(img, padding, mode="CONSTANT")
+            img = tf.pad(img, padding, mode="REFLECT")
             mask = tf.pad(mask, padding, mode="CONSTANT")
             img = tf.image.resize(img, [img_size, img_size])
             mask = tf.image.resize(mask, [img_size, img_size])
         
         # Rotation augmentation (small angles only)
         if tf.random.uniform([]) < 0.5:
-            angle = tf.random.uniform([], minval=-25, maxval=25)
+            angle = tf.random.uniform([], minval=-30, maxval=30)
             img = self.img_rotate(img, angle)
             mask = self.img_rotate(mask, angle, fill_mode='constant')
 

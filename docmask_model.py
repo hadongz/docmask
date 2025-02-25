@@ -62,7 +62,7 @@ def docmask_model(image_size=224):
 
     x2 = keras.layers.GlobalAveragePooling2D()(bridge)
     x2 = keras.layers.Dense(128, activation="relu")(x2)
-    x2 = keras.layers.Dropout(0.2)(x2)  # Regularization
+    x2 = keras.layers.Dropout(0.5)(x2)  # Regularization
     classification_output = keras.layers.Dense(1, activation="sigmoid", name="classification_output")(x2)
     
     return keras.Model(backbone.input, [segmentation_output, classification_output])
@@ -82,37 +82,36 @@ def hybrid_loss(y_true, y_pred):
     edge_pred = tf.abs(tf.image.sobel_edges(y_pred))
     edge_loss = tf.reduce_mean(tf.square(edge_true - edge_pred))
     
-    return 0.3 * bce_loss + 0.2 * dice_loss + 0.5 * edge_loss
+    return 0.5 * bce_loss + 0.4 * dice_loss + 0.1 * edge_loss
 
-def train(model, epoch=10):
+def train(model, epoch=10, need_compile=True):
     print(model.summary())
     model.summary(print_fn=cat_model_summary)
     dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=32)
     train_ds, val_ds = dataset.load()
+
+    if need_compile:
+        loss = {
+            "segmentation_output": hybrid_loss, 
+            "classification_output": keras.losses.binary_crossentropy
+        }
+        loss_weights = {
+            "segmentation_output": 1.0, 
+            "classification_output": 1.0
+        }
+        metrics = {
+            "segmentation_output": ["accuracy"],
+            "classification_output": ["accuracy"]
+        }
+        model.compile(optimizer="adam", loss=loss, loss_weights=loss_weights, metrics=metrics)
+
     callbacks = [
-        keras.callbacks.EarlyStopping(monitor="val_loss", patience=15, start_from_epoch=50),
+        keras.callbacks.EarlyStopping(monitor="val_loss", patience=25, start_from_epoch=100),
         keras.callbacks.ModelCheckpoint(filepath='./output/model_{epoch:02d}_{val_loss:.4f}.keras', save_best_only=True),
         keras.callbacks.TensorBoard(log_dir='./tensorboard'),
         keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=15),
-        keras.callbacks.CSVLogger("./logs/training.log", separator=",", append=False)
+        keras.callbacks.CSVLogger("./logs/training.csv", separator=",", append=False)
     ]
-
-    loss = {
-        "segmentation_output": hybrid_loss, 
-        "classification_output": keras.losses.binary_crossentropy
-    }
-
-    loss_weights = {
-        "segmentation_output": 1.0, 
-        "classification_output": 1.0
-    }
-
-    metrics = {
-        "segmentation_output": ["accuracy"],
-        "classification_output": ["accuracy"]
-    }
-
-    model.compile(optimizer="adam", loss=loss, loss_weights=loss_weights, metrics=metrics)
     model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks)
     model.save("./output/final_model.keras")
 
@@ -163,7 +162,8 @@ def predict(model):
 
 if __name__ == "__main__": 
     model = docmask_model()
-    # model = keras.models.load_model("./output/model_108_0.038681.keras")
+    # model = keras.models.load_model("./output/final_model.keras")
+    # model = keras.models.load_model("./output/model_checkpoint_0_0403.keras")
     train(model, epoch=500)
     # keras.utils.plot_model(model, show_shapes=True)
     # debug_model(model)
