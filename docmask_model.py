@@ -87,6 +87,7 @@ def hybrid_loss(y_true, y_pred):
 
 def train(model, epoch=10, need_compile=True):
     print(model.summary())
+    print("======== TRAIN DOCMASK V1 MODEL ========")
     model.summary(print_fn=cat_model_summary)
     dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=32)
     train_ds, val_ds = dataset.load()

@@ -253,7 +253,7 @@ def hybrid_loss_v2(y_true, y_pred):
     total_loss = 0.4 * focal_bce_loss + 0.4 * dice_loss + 0.2 * edge_loss
     
     # Verify final loss is valid
-    # total_loss = tf.debugging.check_numerics(total_loss, "Total loss contains NaN")
+    total_loss = tf.debugging.check_numerics(total_loss, "Total loss contains NaN")
     
     return total_loss
 
@@ -261,7 +261,6 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     """
     Create a complete training pipeline optimized for a small dataset (1000 images)
     """
-    
     # Define losses and weights
     losses = {
         "segmentation_output": hybrid_loss_v2,
@@ -270,7 +269,7 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     
     loss_weights = {
         "segmentation_output": 1.0,
-        "classification_output": 0.5
+        "classification_output": 1.0
     }
     
     # Adjusted learning rate schedule for smaller dataset
@@ -320,6 +319,7 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     )
 
     print(model.summary())
+    print("======== TRAIN DOCMASK V2 MODEL ========")
     model.summary(print_fn=cat_model_summary)
     dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=batch_size)
     train_ds, val_ds = dataset.load()

@@ -77,7 +77,7 @@ def predict_tflite_model_video(model_name):
             break
 
 def convert_to_tflite(model_name):
-    model = keras.models.load_model(f"./saved_model/{model_name}.keras")
+    model = keras.models.load_model(f"./saved_model/{model_name}.keras", safe_mode=False)
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     tflite_model = converter.convert()
