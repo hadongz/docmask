@@ -64,7 +64,7 @@ class DocMaskDataset:
         
         # Cutout augmentation (simulates occlusion)
         if tf.random.uniform([]) < 0.3:
-            cutout_size = tf.random.uniform(shape=(), minval=10, maxval=20, dtype=tf.int32)
+            cutout_size = tf.random.uniform(shape=(), minval=10, maxval=40, dtype=tf.int32)
             img = tfm.vision.augment.cutout(img, cutout_size, 255)
         
         # Flip augmentation
@@ -75,10 +75,10 @@ class DocMaskDataset:
         # Random padding
         if tf.random.uniform([]) < 0.5:
             # Randomly sample padding sizes
-            top = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
-            bottom = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
-            left = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
-            right = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
+            top = tf.random.uniform((), minval=0, maxval=80, dtype=tf.int32)
+            bottom = tf.random.uniform((), minval=0, maxval=80, dtype=tf.int32)
+            left = tf.random.uniform((), minval=0, maxval=80, dtype=tf.int32)
+            right = tf.random.uniform((), minval=0, maxval=80, dtype=tf.int32)
             
             # Define padding
             padding = [[top, bottom], [left, right], [0, 0]]
@@ -91,8 +91,8 @@ class DocMaskDataset:
             mask = tf.image.resize(mask, [img_size, img_size])
         
         # Rotation augmentation (small angles only)
-        if tf.random.uniform([]) < 0.5:
-            angle = tf.random.uniform([], minval=-30, maxval=30)
+        if tf.random.uniform([]) < 0.8:
+            angle = tf.random.uniform([], minval=-90, maxval=90)
             img = self.img_rotate(img, angle)
             mask = self.img_rotate(mask, angle, fill_mode='constant')
 

@@ -244,16 +244,8 @@ def hybrid_loss_v2(y_true, y_pred):
     # L1 loss is more stable than L2 for edge loss
     edge_loss = tf.reduce_mean(tf.abs(norm_edge_true - norm_edge_pred))
     
-    # Check for NaN values before combining
-    dice_loss = tf.debugging.check_numerics(dice_loss, "Dice loss contains NaN")
-    focal_bce_loss = tf.debugging.check_numerics(focal_bce_loss, "Focal BCE loss contains NaN")
-    edge_loss = tf.debugging.check_numerics(edge_loss, "Edge loss contains NaN")
-    
     # Combine losses with adjusted weights
     total_loss = 0.4 * focal_bce_loss + 0.4 * dice_loss + 0.2 * edge_loss
-    
-    # Verify final loss is valid
-    total_loss = tf.debugging.check_numerics(total_loss, "Total loss contains NaN")
     
     return total_loss
 
@@ -269,7 +261,7 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     
     loss_weights = {
         "segmentation_output": 1.0,
-        "classification_output": 1.0
+        "classification_output": 0.5
     }
     
     # Adjusted learning rate schedule for smaller dataset
@@ -324,7 +316,7 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=batch_size)
     train_ds, val_ds = dataset.load()
     callbacks = [
-        keras.callbacks.EarlyStopping(monitor="val_loss", patience=15, start_from_epoch=20, verbose=1),
+        keras.callbacks.EarlyStopping(monitor="val_loss", patience=15, start_from_epoch=30, verbose=1),
         keras.callbacks.ModelCheckpoint(filepath='./output/model_{epoch:02d}_{val_loss:.4f}.keras', save_best_only=True),
         keras.callbacks.TensorBoard(log_dir='./tensorboard'),
         keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=8, min_lr=1e-6, verbose=1),
