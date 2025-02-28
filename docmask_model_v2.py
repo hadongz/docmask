@@ -14,43 +14,61 @@ def convolution_block(
     dilation_rate=1,
     use_bias=False,
     dropout_rate=0.1,
+    activation="relu",
 ):
-    """Enhanced convolution block with optional dropout and residual connections"""
+    """Enhanced convolution block with advanced features"""
     x = keras.layers.Conv2D(
         num_filters,
         kernel_size=kernel_size,
         dilation_rate=dilation_rate,
         padding="same",
         use_bias=use_bias,
-        kernel_initializer=keras.initializers.HeNormal(),
+        kernel_initializer="he_normal",
     )(block_input)
+    
     x = keras.layers.BatchNormalization()(x)
-    x = keras.layers.ReLU()(x)
     
-    # Add dropout for regularization
+    if activation == "relu":
+        x = keras.layers.ReLU()(x)
+    elif activation == "leaky_relu":
+        x = keras.layers.LeakyReLU(alpha=0.2)(x)
+    
     if dropout_rate > 0:
-        x = keras.layers.Dropout(dropout_rate)(x)
+        x = keras.layers.SpatialDropout2D(dropout_rate)(x)
     
-    # Add residual connection if input and output shapes match
-    if block_input.shape[-1] == num_filters:
-        x = keras.layers.Add()([x, block_input])
+    # Residual connection with projection if needed
+    if block_input.shape[-1] != num_filters:
+        shortcut = keras.layers.Conv2D(
+            num_filters, 1, padding="same", 
+            kernel_initializer="he_normal"
+        )(block_input)
+        shortcut = keras.layers.BatchNormalization()(shortcut)
+    else:
+        shortcut = block_input
         
+    x = keras.layers.Add()([x, shortcut])
+    
     return x
 
-def attention_gate(x, g, filters):
-    """Attention gate to focus on relevant features"""
-    theta_x = keras.layers.Conv2D(filters, 1, padding='same')(x)
-    phi_g = keras.layers.Conv2D(filters, 1, padding='same')(g)
+def attention_gate(x, g, filters, compression=2):
+    """Improved attention gate with channel compression"""
+    theta_x = keras.layers.Conv2D(filters//compression, 1, padding='same')(x)
+    phi_g = keras.layers.Conv2D(filters//compression, 1, padding='same')(g)
     
-    # Upsample g if needed to match x's dimensions
     if g.shape[1] < x.shape[1]:
         phi_g = keras.layers.UpSampling2D(
             size=(x.shape[1] // g.shape[1], x.shape[2] // g.shape[2]),
             interpolation="bilinear"
         )(phi_g)
     
-    f = keras.layers.Activation('relu')(keras.layers.Add()([theta_x, phi_g]))
+    f = keras.layers.Add()([theta_x, phi_g])
+    f = keras.layers.Activation('relu')(f)
+    
     psi_f = keras.layers.Conv2D(1, 1, padding='same')(f)
+    psi_f = keras.layers.UpSampling2D(
+        size=(x.shape[1] // psi_f.shape[1], x.shape[2] // psi_f.shape[2]),
+        interpolation="bilinear"
+    )(psi_f)
     
     alpha = keras.layers.Activation('sigmoid')(psi_f)
     return keras.layers.Multiply()([x, alpha])
@@ -80,7 +98,7 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
         weights="imagenet",
         include_preprocessing=False
     )
-    
+
     # Unfreeze last few layers for fine-tuning
     for layer in backbone.layers[-30:]:
         layer.trainable = True
@@ -142,7 +160,7 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
         # Combine features
         x = keras.layers.Concatenate()([x, skip_processed])
         x = convolution_block(x, filters, dropout_rate=0.1)
-        x = convolution_block(x, filters, dropout_rate=0.1)
+        x = convolution_block(x, filters, dropout_rate=0.2, activation="leaky_relu")
     
     # Final upsampling to original image size if needed
     if x.shape[1] < image_size:
@@ -177,85 +195,90 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     
     return model
 
-@keras.saving.register_keras_serializable()
-def hybrid_loss_v2(y_true, y_pred):
-    """
-    Enhanced hybrid loss function for segmentation with improved numerical stability
-    Combines Dice loss, Focal BCE, and Edge-aware loss
-    """
-    # Ensure inputs are float32
-    y_true = tf.cast(y_true, tf.float32)
-    y_pred = tf.cast(y_pred, tf.float32)
-    
-    # Larger smooth factor for better stability
-    smooth = 1e-6
-    
-    # Clip predictions more aggressively
-    y_pred = tf.clip_by_value(y_pred, smooth, 1.0 - smooth)
-    
-    # 1. Dice Loss with more stable implementation
-    # Cast to float32 to ensure precision
-    intersection = tf.reduce_sum(y_true * y_pred, axis=[1, 2, 3])
-    union = tf.reduce_sum(y_true, axis=[1, 2, 3]) + tf.reduce_sum(y_pred, axis=[1, 2, 3])
-    
-    # Handle empty masks case
-    dice_coef = tf.where(
-        union > smooth,
-        (2. * intersection + smooth) / (union + smooth),
-        tf.ones_like(intersection)  # If both true and pred are empty, dice is 1
-    )
-    dice_loss = 1.0 - dice_coef
-    dice_loss = tf.reduce_mean(dice_loss)
-    
-    # 2. Focal BCE with stability improvements
-    alpha = 0.75  # Weight for positive class
-    gamma = 2.0   # Focusing parameter
-    
-    # Calculate focal weights with improved stability
-    pt = tf.where(tf.equal(y_true, 1), y_pred, 1 - y_pred)
-    pt = tf.clip_by_value(pt, smooth, 1.0 - smooth)  # Ensure pt is not too close to 0 or 1
-    
-    focal_weight = tf.pow(1 - pt, gamma)
-    
-    # Apply alpha weighting
-    alpha_weight = tf.where(tf.equal(y_true, 1), alpha, 1 - alpha)
-    
-    # Calculate focal BCE
-    bce = -tf.math.log(pt)
-    focal_bce = focal_weight * alpha_weight * bce
-    focal_bce_loss = tf.reduce_mean(focal_bce)
-    
-    # 3. Edge Loss with safe normalization
-    # Add axis parameter to sobel operator for clarity
-    edge_true = tf.image.sobel_edges(y_true)
-    edge_pred = tf.image.sobel_edges(y_pred)
-    
-    # Calculate magnitude of gradients
-    edge_true_mag = tf.sqrt(tf.reduce_sum(tf.square(edge_true), axis=-1) + smooth)
-    edge_pred_mag = tf.sqrt(tf.reduce_sum(tf.square(edge_pred), axis=-1) + smooth)
-    
-    # Safe normalization with checks for zero tensors
-    edge_true_max = tf.maximum(tf.reduce_max(edge_true_mag), smooth)
-    edge_pred_max = tf.maximum(tf.reduce_max(edge_pred_mag), smooth)
-    
-    norm_edge_true = edge_true_mag / edge_true_max
-    norm_edge_pred = edge_pred_mag / edge_pred_max
-    
-    # L1 loss is more stable than L2 for edge loss
-    edge_loss = tf.reduce_mean(tf.abs(norm_edge_true - norm_edge_pred))
-    
-    # Combine losses with adjusted weights
-    total_loss = 0.4 * focal_bce_loss + 0.4 * dice_loss + 0.2 * edge_loss
-    
-    return total_loss
+class HybridLossV2(keras.losses.Loss):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def hybrid_loss_v2(self, y_true, y_pred):
+        """
+        Improved hybrid loss function for segmentation with better convergence properties
+        Combines Dice loss, Focal BCE, and Edge-aware loss with adjusted weights and stability
+        improvements to help escape plateaus.
+        """
+        # Ensure inputs are float32
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
+        
+        # Larger smooth factor for better stability
+        smooth = 1e-5
+        
+        # Clip predictions to prevent extreme values
+        y_pred = tf.clip_by_value(y_pred, smooth, 1.0 - smooth)
+        
+        # 1. Dice Loss with improved implementation
+        intersection = tf.reduce_sum(y_true * y_pred, axis=[1, 2, 3])
+        union = tf.reduce_sum(y_true, axis=[1, 2, 3]) + tf.reduce_sum(y_pred, axis=[1, 2, 3])
+        
+        # Handle empty masks case
+        dice_coef = tf.where(
+            union > smooth,
+            (2. * intersection + smooth) / (union + smooth),
+            tf.ones_like(intersection)  # If both true and pred are empty, dice is 1
+        )
+        dice_loss = 1.0 - dice_coef
+        dice_loss = tf.reduce_mean(dice_loss)
+        
+        alpha = 0.85
+        
+        pt = tf.where(tf.equal(y_true, 1), y_pred, 1 - y_pred)
+        pt = tf.clip_by_value(pt, smooth, 1.0 - smooth)
+        
+        gamma = tf.where(pt > 0.7, 1.5, 2.5) 
+        focal_weight = tf.pow(1 - pt, gamma)
+        
+        # Apply alpha weighting
+        alpha_weight = tf.where(tf.equal(y_true, 1), alpha, 1 - alpha)
+        
+        # Calculate focal BCE
+        bce = -tf.math.log(pt)
+        focal_bce = focal_weight * alpha_weight * bce
+        focal_bce_loss = tf.reduce_mean(focal_bce)
+        
+        # 3. Edge Loss with simpler implementation (no normalization)
+        edge_true = tf.image.sobel_edges(y_true)
+        edge_pred = tf.image.sobel_edges(y_pred)
+        
+        # Calculate magnitude of gradients
+        edge_true_mag = tf.sqrt(tf.reduce_sum(tf.square(edge_true), axis=-1) + smooth)
+        edge_pred_mag = tf.sqrt(tf.reduce_sum(tf.square(edge_pred), axis=-1) + smooth)
+        
+        # Simpler L1 edge loss without complex normalization
+        edge_loss = tf.reduce_mean(tf.abs(edge_true_mag - edge_pred_mag))
+        
+        # Combine losses with adjusted weights (emphasizing Dice loss more)
+        lambda_dice = 0.5
+        lambda_focal = 0.3 * (1.0 / (1.0 + tf.exp(-focal_bce_loss)))  # Auto-adjust based on focal loss
+        lambda_edge = 0.2 * (1.0 / (1.0 + tf.exp(-edge_loss)))        # Auto-adjust based on edge loss
+        total_loss = (lambda_dice * dice_loss) + (lambda_focal * focal_bce_loss) + (lambda_edge * edge_loss)
+        
+        return total_loss
+
+    def call(self, y_true, y_pred):
+        return self.hybrid_loss_v2(y_true, y_pred)
+
+    def get_config(self):
+        config = super().get_config()
+        return config
+
 
 def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     """
     Create a complete training pipeline optimized for a small dataset (1000 images)
     """
     # Define losses and weights
+    segmentation_loss = HybridLossV2()
     losses = {
-        "segmentation_output": hybrid_loss_v2,
+        "segmentation_output": segmentation_loss,
         "classification_output": "binary_crossentropy"
     }
     
@@ -264,28 +287,22 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
         "classification_output": 0.5
     }
     
-    # Adjusted learning rate schedule for smaller dataset
-    # One cycle should complete in ~30-40 epochs for 1000 images with batch_size=16
-    steps_per_epoch = 1000 // batch_size  # ~63 steps per epoch
-    decay_steps = steps_per_epoch * 35  # ~2200 steps (35 epochs)
-    
-    lr_schedule = keras.optimizers.schedules.CosineDecay(
-        initial_learning_rate=1e-3,
-        decay_steps=decay_steps,
-        alpha=1e-5
-    )
-    
-    # Adam optimizer with appropriate weight decay for small dataset
-    optimizer = keras.optimizers.Adam(
-        learning_rate=lr_schedule,
-        weight_decay=2e-5  # Slightly increased for smaller dataset
+    optimizer = tf.keras.optimizers.AdamW(
+        learning_rate=1e-4,
+        weight_decay=1e-5
     )
     
     # Metrics
     if use_simple_metrics:
         metrics = {
-            "segmentation_output": ["accuracy"],
-            "classification_output": ["accuracy"]
+            "segmentation_output": [
+                keras.metrics.BinaryIoU(target_class_ids=[0], threshold=0.5), 
+                "accuracy"
+            ],
+            "classification_output": [
+                keras.metrics.AUC(),
+                "accuracy"
+            ]
         }
     else:
         metrics = {
@@ -316,10 +333,10 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=batch_size)
     train_ds, val_ds = dataset.load()
     callbacks = [
-        keras.callbacks.EarlyStopping(monitor="val_loss", patience=15, start_from_epoch=30, verbose=1),
+        keras.callbacks.EarlyStopping(monitor="val_loss", patience=15, start_from_epoch=50, verbose=1),
         keras.callbacks.ModelCheckpoint(filepath='./output/model_{epoch:02d}_{val_loss:.4f}.keras', save_best_only=True),
         keras.callbacks.TensorBoard(log_dir='./tensorboard'),
-        keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=8, min_lr=1e-6, verbose=1),
+        keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=10, min_lr=1e-6, verbose=1),
         keras.callbacks.CSVLogger("./logs/training.csv", separator=",", append=False)
     ]
     model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks, verbose=1)

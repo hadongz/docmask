@@ -3,6 +3,8 @@ from tensorflow.python.framework import ops, dtypes
 import numpy as np
 import tensorflow_models as tfm
 import math
+import io
+from PIL import Image, ImageOps
 
 class DocMaskDataset:
     def __init__(self, txt_path="./labels/mask_labels.txt", img_size=224, img_folder="./train_datasets/", val_ratio=0.2, batch_size=32):
@@ -43,9 +45,7 @@ class DocMaskDataset:
     
     def augment(self, img, labels):
         """Apply augmentation to image and adjust corner coordinates"""
-        
-        # img = data[0]["img_input"]
-        # labels = data[1]
+
         img = img["img_input"]
         mask = labels["segmentation_output"]
         class_label = labels["classification_output"]
@@ -55,7 +55,7 @@ class DocMaskDataset:
             img = tf.image.random_brightness(img, 0.2)
         
         # Random contrast
-        if tf.random.uniform([]) < 0.3:
+        if tf.random.uniform([]) < 0.4:
             img = tf.image.random_contrast(img, 0.8, 1.2)
         
         # Random hue
@@ -64,7 +64,7 @@ class DocMaskDataset:
         
         # Cutout augmentation (simulates occlusion)
         if tf.random.uniform([]) < 0.3:
-            cutout_size = tf.random.uniform(shape=(), minval=10, maxval=40, dtype=tf.int32)
+            cutout_size = tf.random.uniform(shape=(), minval=10, maxval=30, dtype=tf.int32)
             img = tfm.vision.augment.cutout(img, cutout_size, 255)
         
         # Flip augmentation
@@ -73,7 +73,7 @@ class DocMaskDataset:
             mask = tf.image.flip_left_right(mask)
 
         # Random padding
-        if tf.random.uniform([]) < 0.5:
+        if tf.random.uniform([]) < 0.6:
             # Randomly sample padding sizes
             top = tf.random.uniform((), minval=0, maxval=80, dtype=tf.int32)
             bottom = tf.random.uniform((), minval=0, maxval=80, dtype=tf.int32)
@@ -85,16 +85,25 @@ class DocMaskDataset:
             
             # Apply zero padding
             img_size = self.img_size
-            img = tf.pad(img, padding, mode="REFLECT")
+
+            if tf.random.uniform([]) < 0.5:
+                img = tf.pad(img, padding, mode="REFLECT")
+            else:
+                img = tf.pad(img, padding, mode="CONSTANT", constant_values=255)
+
             mask = tf.pad(mask, padding, mode="CONSTANT")
             img = tf.image.resize(img, [img_size, img_size])
             mask = tf.image.resize(mask, [img_size, img_size])
         
         # Rotation augmentation (small angles only)
-        if tf.random.uniform([]) < 0.8:
-            angle = tf.random.uniform([], minval=-90, maxval=90)
+        rotaion_threshold = tf.random.uniform([])
+        if rotaion_threshold < 0.33:
+            angle = tf.random.uniform([], minval=-35, maxval=35)
             img = self.img_rotate(img, angle)
             mask = self.img_rotate(mask, angle, fill_mode='constant')
+        elif rotaion_threshold < 0.66:
+            img = tf.image.rot90(img)
+            mask = tf.image.rot90(mask)
 
         mask /= 255.0
         return ({"img_input": img}, {"segmentation_output": mask, "classification_output": class_label})
@@ -118,7 +127,7 @@ class DocMaskDataset:
     
     def configure_for_performance(self, ds):
         """Configure dataset for optimal performance"""
-        AUTOTUNE = tf.data.experimental.AUTOTUNE
+        AUTOTUNE = tf.data.AUTOTUNE
         ds = ds.cache()
         ds = ds.shuffle(buffer_size=1000)
         ds = ds.map(self.augment, num_parallel_calls=AUTOTUNE)
@@ -171,11 +180,24 @@ class DocMaskDataset:
         val_ds = dataset_val.map(self.analysis_line, num_parallel_calls=tf.data.AUTOTUNE)
 
         return self.configure_for_performance(train_ds), self.configure_for_performance(val_ds)
+    
+    def load_test(self):
+        with open(self.txt_path, "r") as fr:
+            lines = fr.readlines()
+            lines = [line.strip() for line in lines]
+            self.data_size = len(lines)
+
+        np.random.shuffle(lines)
+        file_lines = ops.convert_to_tensor(lines, dtype=dtypes.string)
+        dataset = tf.data.Dataset.from_tensor_slices(file_lines)
+        dataset = dataset.shuffle(self.data_size, reshuffle_each_iteration=False)
+        dataset = dataset.map(self.analysis_line, num_parallel_calls=tf.data.AUTOTUNE)
+        return self.configure_for_performance(dataset)
 
 if __name__ == "__main__":
     import cv2
 
-    dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=1)
+    dataset = DocMaskDataset(txt_path="./labels/test_labels.txt", img_size=224, img_folder="./test_datasets/", batch_size=1)
     train_ds, val_ds = dataset.load()
 
     for x, y in train_ds.take(10):
@@ -187,5 +209,6 @@ if __name__ == "__main__":
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         cv2.imshow("Image", image)
         cv2.imshow("Mask", mask)
+        cv2.moveWindow("Mask", 0, 224) 
         cv2.waitKey(0)
         cv2.destroyAllWindows()

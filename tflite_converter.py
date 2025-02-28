@@ -5,6 +5,7 @@ import cv2
 import os
 import argparse
 from docmask_model import hybrid_loss
+from docmask_model_v2 import hybrid_loss_v2
 
 def predict_tflite_model(model_name):
     interpreter = tf.lite.Interpreter(f"./saved_model/{model_name}.tflite")

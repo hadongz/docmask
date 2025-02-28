@@ -1,0 +1,10 @@
+test-receipt-9.jpg,mask-test-receipt-9.jpg,1
+test-receipt-8.jpg,mask-test-receipt-8.jpg,1
+test-receipt-7.jpg,mask-test-receipt-7.jpg,1
+test-receipt-6.jpg,mask-test-receipt-6.jpg,1
+test-receipt-5.jpg,mask-test-receipt-5.jpg,1
+test-receipt-4.jpg,mask-test-receipt-4.jpg,1
+test-receipt-3.jpg,mask-test-receipt-3.jpg,1
+test-receipt-2.jpg,mask-test-receipt-2.jpg,1
+test-receipt-1.jpg,mask-test-receipt-1.jpg,1
+test-receipt-0.jpg,mask-test-receipt-0.jpg,1
