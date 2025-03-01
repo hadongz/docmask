@@ -125,12 +125,13 @@ class DocMaskDataset:
         image = tfm.vision.augment.transform(image, transforms=transforms, fill_mode=fill_mode)
         return tfm.vision.augment.from_4d(image, original_ndims)
     
-    def configure_for_performance(self, ds):
+    def configure_for_performance(self, ds, augment=True):
         """Configure dataset for optimal performance"""
         AUTOTUNE = tf.data.AUTOTUNE
         ds = ds.cache()
         ds = ds.shuffle(buffer_size=1000)
-        ds = ds.map(self.augment, num_parallel_calls=AUTOTUNE)
+        if augment:
+            ds = ds.map(self.augment, num_parallel_calls=AUTOTUNE)
         ds = ds.batch(self.batch_size)
         ds = ds.prefetch(buffer_size=AUTOTUNE)
         return ds
@@ -192,7 +193,7 @@ class DocMaskDataset:
         dataset = tf.data.Dataset.from_tensor_slices(file_lines)
         dataset = dataset.shuffle(self.data_size, reshuffle_each_iteration=False)
         dataset = dataset.map(self.analysis_line, num_parallel_calls=tf.data.AUTOTUNE)
-        return self.configure_for_performance(dataset)
+        return self.configure_for_performance(dataset, augment=False)
 
 if __name__ == "__main__":
     import cv2
