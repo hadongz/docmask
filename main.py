@@ -8,7 +8,8 @@ from docmask_dataset import DocMaskDataset
 from utils import cat_model_summary
 
 from docmask_model import docmask_model, hybrid_loss, train
-from docmask_model_v2 import docmask_model_v2, HybridLossV2, train_v2
+from docmask_model_v2 import docmask_model_v2, train_v2
+from loss import HybridLossV3, HybridLossV2
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
@@ -32,7 +33,7 @@ def debug_model(model):
         class_pred = output[1][0].numpy()
         cv2.putText(image, f"{class_pred}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
 
-        segmentation_loss = HybridLossV2()
+        segmentation_loss = HybridLossV3()
         segment_true = y["segmentation_output"]
         classification_true = y["classification_output"]
         segment_pred = output[0]
@@ -70,7 +71,7 @@ def test_model(model):
         class_pred = output[1][0].numpy()
         cv2.putText(image, f"{class_pred}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
 
-        segmentation_loss = HybridLossV2()
+        segmentation_loss = HybridLossV3()
         segment_true = y["segmentation_output"]
         classification_true = y["classification_output"]
         segment_pred = output[0]
@@ -166,7 +167,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.model_path:
-        model = keras.models.load_model(args.model_path, safe_mode=False, custom_objects={"Custom>hybrid_loss_v2": HybridLossV2()})
+        model = keras.models.load_model(args.model_path, safe_mode=False)
     elif args.v1:
         model = docmask_model()
     elif args.v2:

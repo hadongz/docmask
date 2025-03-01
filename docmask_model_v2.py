@@ -4,6 +4,7 @@ import keras
 import os
 from docmask_dataset import DocMaskDataset
 from utils import cat_model_summary
+from loss import HybridLossV3
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
@@ -71,6 +72,19 @@ def attention_gate(x, g, filters, compression=2):
     )(psi_f)
     
     alpha = keras.layers.Activation('sigmoid')(psi_f)
+    alpha = keras.layers.Conv2D(
+        1, 1, activation='sigmoid', 
+        kernel_initializer='he_normal'
+    )(alpha)
+    
+    # Channel-wise scaling
+    channel_scale = keras.layers.GlobalAveragePooling2D(keepdims=True)(alpha)
+    channel_scale = keras.layers.Dense(
+        1, activation='relu', 
+        kernel_initializer='he_normal'
+    )(channel_scale)
+    alpha = keras.layers.Multiply()([alpha, channel_scale])
+    
     return keras.layers.Multiply()([x, alpha])
 
 def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
@@ -118,12 +132,17 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     aspp_rates = [1, 6, 12, 18]
     
     for rate in aspp_rates:
-        aspp_outputs.append(convolution_block(
-            bridge, 
-            num_filters=256, 
-            kernel_size=3, 
-            dilation_rate=rate
-        ))
+        # Replace standard conv with depthwise separable
+        x = keras.layers.SeparableConv2D(
+            256, 3, 
+            dilation_rate=rate, 
+            padding="same", 
+            depthwise_initializer="he_normal",
+            pointwise_initializer="he_normal"
+        )(bridge)
+        x = keras.layers.BatchNormalization()(x)
+        x = keras.layers.ReLU()(x)
+        aspp_outputs.append(x)
     
     # Global pooling branch
     global_features = keras.layers.GlobalAveragePooling2D()(bridge)
@@ -156,11 +175,19 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
         # Apply attention gate if requested
         if use_attn:
             skip_processed = attention_gate(skip_processed, x, filters)
-            
+        
+        # Add dynamic weighting based on decoder features
+        skip_weights = keras.layers.Conv2D(
+            1, 1, 
+            activation="sigmoid",  # Values between 0-1
+            kernel_initializer="he_normal"
+        )(x)  # x = current decoder features
+        skip_processed = keras.layers.Multiply()([skip_processed, skip_weights])
+
         # Combine features
         x = keras.layers.Concatenate()([x, skip_processed])
-        x = convolution_block(x, filters, dropout_rate=0.1)
-        x = convolution_block(x, filters, dropout_rate=0.2, activation="leaky_relu")
+        x = convolution_block(x, filters, dropout_rate=0.2)
+        x = convolution_block(x, filters, dropout_rate=0.2)
     
     # Final upsampling to original image size if needed
     if x.shape[1] < image_size:
@@ -195,88 +222,12 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     
     return model
 
-class HybridLossV2(keras.losses.Loss):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    def hybrid_loss_v2(self, y_true, y_pred):
-        """
-        Improved hybrid loss function for segmentation with better convergence properties
-        Combines Dice loss, Focal BCE, and Edge-aware loss with adjusted weights and stability
-        improvements to help escape plateaus.
-        """
-        # Ensure inputs are float32
-        y_true = tf.cast(y_true, tf.float32)
-        y_pred = tf.cast(y_pred, tf.float32)
-        
-        # Larger smooth factor for better stability
-        smooth = 1e-5
-        
-        # Clip predictions to prevent extreme values
-        y_pred = tf.clip_by_value(y_pred, smooth, 1.0 - smooth)
-        
-        # 1. Dice Loss with improved implementation
-        intersection = tf.reduce_sum(y_true * y_pred, axis=[1, 2, 3])
-        union = tf.reduce_sum(y_true, axis=[1, 2, 3]) + tf.reduce_sum(y_pred, axis=[1, 2, 3])
-        
-        # Handle empty masks case
-        dice_coef = tf.where(
-            union > smooth,
-            (2. * intersection + smooth) / (union + smooth),
-            tf.ones_like(intersection)  # If both true and pred are empty, dice is 1
-        )
-        dice_loss = 1.0 - dice_coef
-        dice_loss = tf.reduce_mean(dice_loss)
-        
-        alpha = 0.85
-        
-        pt = tf.where(tf.equal(y_true, 1), y_pred, 1 - y_pred)
-        pt = tf.clip_by_value(pt, smooth, 1.0 - smooth)
-        
-        gamma = tf.where(pt > 0.7, 1.5, 2.5) 
-        focal_weight = tf.pow(1 - pt, gamma)
-        
-        # Apply alpha weighting
-        alpha_weight = tf.where(tf.equal(y_true, 1), alpha, 1 - alpha)
-        
-        # Calculate focal BCE
-        bce = -tf.math.log(pt)
-        focal_bce = focal_weight * alpha_weight * bce
-        focal_bce_loss = tf.reduce_mean(focal_bce)
-        
-        # 3. Edge Loss with simpler implementation (no normalization)
-        edge_true = tf.image.sobel_edges(y_true)
-        edge_pred = tf.image.sobel_edges(y_pred)
-        
-        # Calculate magnitude of gradients
-        edge_true_mag = tf.sqrt(tf.reduce_sum(tf.square(edge_true), axis=-1) + smooth)
-        edge_pred_mag = tf.sqrt(tf.reduce_sum(tf.square(edge_pred), axis=-1) + smooth)
-        
-        # Simpler L1 edge loss without complex normalization
-        edge_loss = tf.reduce_mean(tf.abs(edge_true_mag - edge_pred_mag))
-        
-        # Combine losses with adjusted weights (emphasizing Dice loss more)
-        lambda_dice = 0.5
-        lambda_focal = 0.3 * (1.0 / (1.0 + tf.exp(-focal_bce_loss)))  # Auto-adjust based on focal loss
-        lambda_edge = 0.2 * (1.0 / (1.0 + tf.exp(-edge_loss)))        # Auto-adjust based on edge loss
-        total_loss = (lambda_dice * dice_loss) + (lambda_focal * focal_bce_loss) + (lambda_edge * edge_loss)
-        
-        return total_loss
-
-    def call(self, y_true, y_pred):
-        return self.hybrid_loss_v2(y_true, y_pred)
-
-    def get_config(self):
-        config = super().get_config()
-        return config
-
-
 def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     """
     Create a complete training pipeline optimized for a small dataset (1000 images)
     """
     # Define losses and weights
-    segmentation_loss = HybridLossV2()
+    segmentation_loss = HybridLossV3()
     losses = {
         "segmentation_output": segmentation_loss,
         "classification_output": "binary_crossentropy"
@@ -287,8 +238,8 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
         "classification_output": 0.5
     }
     
-    optimizer = tf.keras.optimizers.AdamW(
-        learning_rate=1e-4,
+    optimizer = tf.keras.optimizers.Adam(
+        learning_rate=1e-3,
         weight_decay=1e-5
     )
     
@@ -296,11 +247,9 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     if use_simple_metrics:
         metrics = {
             "segmentation_output": [
-                keras.metrics.BinaryIoU(target_class_ids=[0], threshold=0.5), 
                 "accuracy"
             ],
             "classification_output": [
-                keras.metrics.AUC(),
                 "accuracy"
             ]
         }
