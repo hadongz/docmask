@@ -167,7 +167,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.model_path:
-        model = keras.models.load_model(args.model_path, safe_mode=False, custom_objects={"boundary_iou": boundary_iou, "boundary_f1": boundary_f1})
+        model = keras.models.load_model(args.model_path, safe_mode=False)
     elif args.v1:
         model = docmask_model()
     elif args.v2:

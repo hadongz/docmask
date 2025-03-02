@@ -5,7 +5,7 @@ import os
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
 class HybridLossV3(keras.losses.Loss):
-    def __init__(self, alpha=0.6, gamma=2.0, edge_weight=0.05, smooth=1e-6, **kwargs):
+    def __init__(self, alpha=0.7, gamma=2.5, edge_weight=0.3, smooth=1e-6, **kwargs):
         super().__init__(**kwargs)
         self.alpha = alpha  # Dice vs Focal balance
         self.gamma = gamma  # Focus on hard examples
@@ -118,9 +118,9 @@ class HybridLossV2(keras.losses.Loss):
         edge_loss = tf.reduce_mean(tf.abs(edge_true_mag - edge_pred_mag))
         
         # Combine losses with adjusted weights (emphasizing Dice loss more)
-        lambda_dice = 0.5
-        lambda_focal = 0.3 * (1.0 / (1.0 + tf.exp(-focal_bce_loss)))  # Auto-adjust based on focal loss
-        lambda_edge = 0.2 * (1.0 / (1.0 + tf.exp(-edge_loss)))        # Auto-adjust based on edge loss
+        lambda_dice = 0.7
+        lambda_focal = 0.25 
+        lambda_edge = 0.05
         total_loss = (lambda_dice * dice_loss) + (lambda_focal * focal_bce_loss) + (lambda_edge * edge_loss)
         
         return total_loss

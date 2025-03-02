@@ -1,9 +1,6 @@
 import tensorflow as tf
-import numpy as np
 import keras
 import os
-import cv2
-import argparse
 from docmask_dataset import DocMaskDataset
 from utils import cat_model_summary
 

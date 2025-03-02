@@ -4,8 +4,7 @@ import keras
 import os
 from docmask_dataset import DocMaskDataset
 from utils import cat_model_summary
-from loss import HybridLossV3
-from tqdm.keras import TqdmCallback
+from loss import HybridLossV3, HybridLossV2
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
@@ -16,7 +15,7 @@ def convolution_block(
     dilation_rate=1,
     use_bias=False,
     dropout_rate=0.1,
-    activation="relu",
+    activation="swish",
 ):
     """Enhanced convolution block with advanced features"""
     x = keras.layers.Conv2D(
@@ -29,11 +28,7 @@ def convolution_block(
     )(block_input)
     
     x = keras.layers.BatchNormalization()(x)
-    
-    if activation == "relu":
-        x = keras.layers.ReLU()(x)
-    elif activation == "leaky_relu":
-        x = keras.layers.LeakyReLU(alpha=0.2)(x)
+    x = keras.layers.Activation(activation)(x)
     
     if dropout_rate > 0:
         x = keras.layers.SpatialDropout2D(dropout_rate)(x)
@@ -42,7 +37,8 @@ def convolution_block(
     if block_input.shape[-1] != num_filters:
         shortcut = keras.layers.Conv2D(
             num_filters, 1, padding="same", 
-            kernel_initializer="he_normal"
+            kernel_initializer="he_normal",
+            kernel_regularizer=keras.regularizers.l2(1e-4)
         )(block_input)
         shortcut = keras.layers.BatchNormalization()(shortcut)
     else:
@@ -51,6 +47,29 @@ def convolution_block(
     x = keras.layers.Add()([x, shortcut])
     
     return x
+
+def channel_attention(inputs, reduction=8):
+    """Squeeze-and-excitation channel attention module"""
+    channels = inputs.shape[-1]
+    
+    # Squeeze
+    se = keras.layers.GlobalAveragePooling2D(keepdims=True)(inputs)
+    
+    # Excite
+    se = keras.layers.Dense(
+        channels // reduction,
+        activation="swish",
+        kernel_initializer="he_normal",
+        kernel_regularizer=keras.regularizers.l2(1e-4)
+    )(se)
+    se = keras.layers.Dense(
+        channels,
+        activation="sigmoid",
+        kernel_initializer="he_normal",
+        kernel_regularizer=keras.regularizers.l2(1e-4)
+    )(se)
+    
+    return keras.layers.Multiply()([inputs, se])
 
 def attention_gate(x, g, filters, compression=2):
     """Improved attention gate with channel compression"""
@@ -88,6 +107,64 @@ def attention_gate(x, g, filters, compression=2):
     
     return keras.layers.Multiply()([x, alpha])
 
+def aspp_module(inputs, output_stride=16, l2_weight=1e-4):
+    """Improved ASPP module with optimized dilation rates"""
+    shape = tf.keras.backend.int_shape(inputs)
+    
+    if output_stride == 16:
+        rates = [6, 12, 18]
+    else:  # For output_stride = 8
+        rates = [12, 24, 36]
+    
+    # 1x1 conv branch
+    conv1x1 = keras.layers.Conv2D(
+        256, 1, padding='same',
+        kernel_initializer='he_normal',
+        kernel_regularizer=keras.regularizers.l2(l2_weight)
+    )(inputs)
+    conv1x1 = keras.layers.BatchNormalization()(conv1x1)
+    conv1x1 = keras.layers.Activation("swish")(conv1x1)
+    
+    # Atrous branches
+    atrous_convs = []
+    for rate in rates:
+        x = keras.layers.SeparableConv2D(
+            256, 3, padding='same',
+            dilation_rate=rate,
+            depthwise_initializer="he_normal",
+            pointwise_initializer="he_normal",
+        )(inputs)
+        x = keras.layers.BatchNormalization()(x)
+        x = keras.layers.Activation("swish")(x)
+        atrous_convs.append(x)
+    
+    # Global average pooling branch
+    gap = keras.layers.GlobalAveragePooling2D(keepdims=True)(inputs)
+    gap = keras.layers.Conv2D(
+        256, 1, padding='same',
+        kernel_initializer='he_normal',
+        kernel_regularizer=keras.regularizers.l2(l2_weight)
+    )(gap)
+    gap = keras.layers.BatchNormalization()(gap)
+    gap = keras.layers.Activation("swish")(gap)
+    gap = keras.layers.UpSampling2D(
+        size=(shape[1], shape[2]),
+        interpolation='bilinear'
+    )(gap)
+    
+    # Concatenate and compress
+    x = keras.layers.Concatenate()([conv1x1] + atrous_convs + [gap])
+    x = keras.layers.Conv2D(
+        256, 1, padding='same',
+        kernel_initializer='he_normal',
+        kernel_regularizer=keras.regularizers.l2(l2_weight)
+    )(x)
+    x = keras.layers.BatchNormalization()(x)
+    x = keras.layers.Activation("swish")(x)
+    x = channel_attention(x)
+    
+    return x
+
 def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     """
     Improved document segmentation and classification model
@@ -102,9 +179,7 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     """
     # Input layer
     input_layer = keras.layers.Input((image_size, image_size, 3), name="img_input")
-    
-    # Data normalization
-    x = keras.layers.Lambda(lambda x: x / 255.0)(input_layer)
+    x = keras.layers.Rescaling(1.0 / 255.0)(input_layer)
     
     # Encoder (MobileNetV3Large with fixed weights initially)
     backbone = keras.applications.MobileNetV3Large(
@@ -115,8 +190,11 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     )
 
     # Unfreeze last few layers for fine-tuning
-    for layer in backbone.layers[-30:]:
-        layer.trainable = True
+    for layer in backbone.layers:
+        if any([kw in layer.name for kw in ['expanded_conv_2', 'expanded_conv_6', 'expanded_conv_8', 'expanded_conv_10', 'expanded_conv_11', 'expanded_conv_12']]):
+            layer.trainable = True
+        else:
+            layer.trainable = False
     
     # Enhanced skip connections with more optimal layer choices
     skip_connections = [
@@ -129,34 +207,7 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     bridge = backbone.output  # 7x7 with 960 channels
     
     # ASPP (Atrous Spatial Pyramid Pooling) for better context understanding
-    aspp_outputs = []
-    aspp_rates = [1, 6, 12, 18]
-    
-    for rate in aspp_rates:
-        # Replace standard conv with depthwise separable
-        x = keras.layers.SeparableConv2D(
-            256, 3, 
-            dilation_rate=rate, 
-            padding="same", 
-            depthwise_initializer="he_normal",
-            pointwise_initializer="he_normal"
-        )(bridge)
-        x = keras.layers.BatchNormalization()(x)
-        x = keras.layers.ReLU()(x)
-        aspp_outputs.append(x)
-    
-    # Global pooling branch
-    global_features = keras.layers.GlobalAveragePooling2D()(bridge)
-    global_features = keras.layers.Reshape((1, 1, 960))(global_features)
-    global_features = keras.layers.Conv2D(256, 1, padding='same')(global_features)
-    global_features = keras.layers.UpSampling2D(
-        size=(bridge.shape[1], bridge.shape[2]),
-        interpolation='bilinear'
-    )(global_features)
-    
-    aspp_outputs.append(global_features)
-    x = keras.layers.Concatenate()(aspp_outputs)
-    x = convolution_block(x, 256)
+    x = aspp_module(bridge)
     
     # Decoder with attention gates
     decoder_filters = [256, 128, 64, 32]
@@ -278,7 +329,7 @@ def boundary_f1(y_true, y_pred, threshold=0.5):
     recall = tp / (tp + fn + 1e-6)
     return 2 * (precision * recall) / (precision + recall + 1e-6)
 
-def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=False):
+def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     """
     Create a complete training pipeline optimized for a small dataset (1000 images)
     """
@@ -293,19 +344,8 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=False):
         "segmentation_output": 1.0,
         "classification_output": 0.5
     }
-
-    lr_schedule = keras.optimizers.schedules.CosineDecayRestarts(
-        initial_learning_rate=1e-3,
-        first_decay_steps=600,
-        t_mul=1.5,
-        m_mul=0.85,
-        alpha=0.01
-    )
     
-    optimizer = tf.keras.optimizers.Adam(
-        learning_rate=lr_schedule,
-        weight_decay=1e-5
-    )
+    optimizer = keras.optimizers.Adam(learning_rate=0.0001)
     
     # Metrics
     if use_simple_metrics:
@@ -345,11 +385,11 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=False):
     dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=batch_size)
     train_ds, val_ds = dataset.load()
     callbacks = [
-        TqdmCallback(verbose=1),
         keras.callbacks.EarlyStopping(monitor="val_loss", patience=20, start_from_epoch=50, verbose=1),
-        keras.callbacks.ModelCheckpoint(filepath='./output/model_{epoch:02d}_{val_loss:.4f}.keras', save_best_only=True),
+        keras.callbacks.ModelCheckpoint(monitor="val_loss", filepath='./output/model_{epoch:02d}_{val_loss:.4f}.keras', save_best_only=True),
         keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=1, update_freq='epoch'),
-        keras.callbacks.CSVLogger("./logs/training.csv", separator=",", append=False)
+        keras.callbacks.CSVLogger("./logs/training.csv", separator=",", append=True),
+        keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, verbose=1, min_lr=1e-6)
     ]
-    model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks, verbose=2)
+    model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks, verbose=1)
     model.save("./output/final_model.keras")
