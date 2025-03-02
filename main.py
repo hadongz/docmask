@@ -8,7 +8,7 @@ from docmask_dataset import DocMaskDataset
 from utils import cat_model_summary
 
 from docmask_model import docmask_model, hybrid_loss, train
-from docmask_model_v2 import docmask_model_v2, train_v2
+from docmask_model_v2 import docmask_model_v2, train_v2, boundary_f1, boundary_iou
 from loss import HybridLossV3, HybridLossV2
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
@@ -167,7 +167,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.model_path:
-        model = keras.models.load_model(args.model_path, safe_mode=False)
+        model = keras.models.load_model(args.model_path, safe_mode=False, custom_objects={"boundary_iou": boundary_iou, "boundary_f1": boundary_f1})
     elif args.v1:
         model = docmask_model()
     elif args.v2:

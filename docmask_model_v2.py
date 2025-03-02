@@ -1,10 +1,11 @@
 import tensorflow as tf
-import numpy as np
+
 import keras
 import os
 from docmask_dataset import DocMaskDataset
 from utils import cat_model_summary
 from loss import HybridLossV3
+from tqdm.keras import TqdmCallback
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
@@ -222,7 +223,62 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     
     return model
 
-def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
+@keras.saving.register_keras_serializable()
+def boundary_iou(y_true, y_pred, dilation_radius=3):
+    """Calculate Intersection-over-Union for mask boundaries"""
+    # Ensure input is 4D (batch, height, width, channels)
+    y_true = tf.ensure_shape(y_true, (None, None, None, 1))
+    y_pred = tf.ensure_shape(y_pred, (None, None, None, 1))
+
+    # Create 4D erosion kernel [height, width, in_channels, out_channels]
+    kernel = tf.ones((dilation_radius, dilation_radius, 1), dtype=tf.float32)
+
+    # Erosion operations with proper data_format
+    y_true_eroded = tf.nn.erosion2d(
+        value=y_true,
+        filters=kernel,
+        strides=[1, 1, 1, 1],
+        padding='SAME',
+        data_format='NHWC',  # Channels-last format
+        dilations=[1, 1, 1, 1],
+        name='y_true_erosion'
+    )
+
+    y_pred_eroded = tf.nn.erosion2d(
+        value=y_pred,
+        filters=kernel,
+        strides=[1, 1, 1, 1],
+        padding='SAME',
+        data_format='NHWC',  # Channels-last format
+        dilations=[1, 1, 1, 1],
+        name='y_pred_erosion'
+    )
+
+    # Calculate boundary regions
+    y_true_boundary = y_true - y_true_eroded
+    y_pred_boundary = y_pred - y_pred_eroded
+
+    # Compute IoU
+    intersection = tf.reduce_sum(y_true_boundary * y_pred_boundary)
+    union = tf.reduce_sum(y_true_boundary) + tf.reduce_sum(y_pred_boundary) - intersection
+    
+    return (intersection + 1e-6) / (union + 1e-6)
+
+@keras.saving.register_keras_serializable()
+def boundary_f1(y_true, y_pred, threshold=0.5):
+    y_pred_bin = tf.cast(y_pred > threshold, tf.float32)
+    edges_true = tf.image.sobel_edges(y_true)
+    edges_pred = tf.image.sobel_edges(y_pred_bin)
+    
+    tp = tf.reduce_sum(edges_true * edges_pred)
+    fp = tf.reduce_sum(edges_pred) - tp
+    fn = tf.reduce_sum(edges_true) - tp
+    
+    precision = tp / (tp + fp + 1e-6)
+    recall = tp / (tp + fn + 1e-6)
+    return 2 * (precision * recall) / (precision + recall + 1e-6)
+
+def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=False):
     """
     Create a complete training pipeline optimized for a small dataset (1000 images)
     """
@@ -237,9 +293,17 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
         "segmentation_output": 1.0,
         "classification_output": 0.5
     }
+
+    lr_schedule = keras.optimizers.schedules.CosineDecayRestarts(
+        initial_learning_rate=1e-3,
+        first_decay_steps=600,
+        t_mul=1.5,
+        m_mul=0.85,
+        alpha=0.01
+    )
     
     optimizer = tf.keras.optimizers.Adam(
-        learning_rate=1e-3,
+        learning_rate=lr_schedule,
         weight_decay=1e-5
     )
     
@@ -256,15 +320,14 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     else:
         metrics = {
             "segmentation_output": [
-                keras.metrics.IoU(num_classes=2, target_class_ids=[1]),
-                keras.metrics.Recall(),
-                keras.metrics.Precision()
+                tf.keras.metrics.MeanIoU(num_classes=2),
+                boundary_iou,
+                boundary_f1
             ],
             "classification_output": [
-                keras.metrics.BinaryAccuracy(),
-                keras.metrics.AUC(),
-                keras.metrics.Precision(),
-                keras.metrics.Recall()
+                tf.keras.metrics.AUC(name='auc_roc', curve='ROC'),
+                tf.keras.metrics.AUC(name='auc_pr', curve='PR'),
+                tf.keras.metrics.PrecisionAtRecall(0.9)
             ]
         }
     
@@ -282,11 +345,11 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=batch_size)
     train_ds, val_ds = dataset.load()
     callbacks = [
-        keras.callbacks.EarlyStopping(monitor="val_loss", patience=15, start_from_epoch=50, verbose=1),
+        TqdmCallback(verbose=1),
+        keras.callbacks.EarlyStopping(monitor="val_loss", patience=20, start_from_epoch=50, verbose=1),
         keras.callbacks.ModelCheckpoint(filepath='./output/model_{epoch:02d}_{val_loss:.4f}.keras', save_best_only=True),
-        keras.callbacks.TensorBoard(log_dir='./tensorboard'),
-        keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=10, min_lr=1e-6, verbose=1),
+        keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=1, update_freq='epoch'),
         keras.callbacks.CSVLogger("./logs/training.csv", separator=",", append=False)
     ]
-    model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks, verbose=1)
+    model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks, verbose=2)
     model.save("./output/final_model.keras")

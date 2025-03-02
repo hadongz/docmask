@@ -3,8 +3,6 @@ from tensorflow.python.framework import ops, dtypes
 import numpy as np
 import tensorflow_models as tfm
 import math
-import io
-from PIL import Image, ImageOps
 
 class DocMaskDataset:
     def __init__(self, txt_path="./labels/mask_labels.txt", img_size=224, img_folder="./train_datasets/", val_ratio=0.2, batch_size=32):
@@ -49,6 +47,11 @@ class DocMaskDataset:
         img = img["img_input"]
         mask = labels["segmentation_output"]
         class_label = labels["classification_output"]
+
+        # Random no augmentaion
+        if tf.random.uniform([]) < 0.25:
+            mask /= 255.0
+            return ({"img_input": img}, {"segmentation_output": mask, "classification_output": class_label})
 
         # Random brightness
         if tf.random.uniform([]) < 0.5:

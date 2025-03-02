@@ -5,7 +5,7 @@ import os
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
 class HybridLossV3(keras.losses.Loss):
-    def __init__(self, alpha=0.7, gamma=2.0, edge_weight=0.1, smooth=1e-6, **kwargs):
+    def __init__(self, alpha=0.6, gamma=2.0, edge_weight=0.05, smooth=1e-6, **kwargs):
         super().__init__(**kwargs)
         self.alpha = alpha  # Dice vs Focal balance
         self.gamma = gamma  # Focus on hard examples
@@ -22,22 +22,26 @@ class HybridLossV3(keras.losses.Loss):
         focal_loss = self.focal_loss(y_true, y_pred)
         boundary_loss = self.boundary_awareness(y_true, y_pred)
 
-        return (self.alpha * dice_loss) + ((1 - self.alpha) * focal_loss) + (self.edge_weight * boundary_loss)
+        return (self.alpha * dice_loss) + ((1 - self.alpha) * focal_loss) + (self.edge_weight * boundary_loss) 
 
     def dice_loss(self, y_true, y_pred):
         intersection = tf.reduce_sum(y_true * y_pred)
         union = tf.reduce_sum(y_true) + tf.reduce_sum(y_pred)
-        return 1.0 - (2.*intersection + self.smooth) / (union + self.smooth)
+        loss = 1.0 - (2.*intersection + self.smooth) / (union + self.smooth)
+        return tf.reduce_mean(loss)
 
     def focal_loss(self, y_true, y_pred):
         pt = tf.where(tf.equal(y_true, 1), y_pred, 1 - y_pred)
-        bce = -tf.math.log(pt + self.smooth)
-        return tf.reduce_mean(tf.pow(1.0 - pt, self.gamma) * bce)
+        log_pt = tf.math.log(pt + self.smooth)
+        focal_weight = tf.pow(1.0 - pt, self.gamma)
+        loss = -focal_weight * log_pt
+        return tf.reduce_mean(loss)
 
     def boundary_awareness(self, y_true, y_pred):
         edges_true = tf.sqrt(tf.reduce_sum(tf.square(tf.image.sobel_edges(y_true)), axis=-1) + self.smooth)
         edges_pred = tf.sqrt(tf.reduce_sum(tf.square(tf.image.sobel_edges(y_pred)), axis=-1) + self.smooth)
-        return tf.reduce_mean(tf.abs(edges_true - edges_pred))
+        weighted_smoothness = edges_true * edges_pred
+        return tf.reduce_mean(weighted_smoothness)
 
     def get_config(self):
         config = super().get_config()
