@@ -49,7 +49,7 @@ class DocMaskDataset:
         class_label = labels["classification_output"]
 
         # Random no augmentaion
-        if tf.random.uniform([]) < 0.05:
+        if tf.random.uniform([]) < 0.08:
             mask /= 255.0
             return ({"img_input": img}, {"segmentation_output": mask, "classification_output": class_label})
 
@@ -76,12 +76,12 @@ class DocMaskDataset:
             mask = tf.image.flip_left_right(mask)
 
         # Random padding
-        if tf.random.uniform([]) < 0.6:
+        if tf.random.uniform([]) < 0.5:
             # Randomly sample padding sizes
-            top = tf.random.uniform((), minval=0, maxval=80, dtype=tf.int32)
-            bottom = tf.random.uniform((), minval=0, maxval=80, dtype=tf.int32)
-            left = tf.random.uniform((), minval=0, maxval=80, dtype=tf.int32)
-            right = tf.random.uniform((), minval=0, maxval=80, dtype=tf.int32)
+            top = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
+            bottom = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
+            left = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
+            right = tf.random.uniform((), minval=0, maxval=50, dtype=tf.int32)
             
             # Define padding
             padding = [[top, bottom], [left, right], [0, 0]]

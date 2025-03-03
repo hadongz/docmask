@@ -295,7 +295,7 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     Create a complete training pipeline optimized for a small dataset (1000 images)
     """
     # Define losses and weights
-    segmentation_loss = HybridLossV3()
+    segmentation_loss = HybridLossV2()
     losses = {
         "segmentation_output": segmentation_loss,
         "classification_output": "binary_crossentropy"
@@ -356,7 +356,7 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     dataset = DocMaskDataset(txt_path="./labels/train_labels.txt", img_size=224, img_folder="./train_datasets/", batch_size=batch_size)
     train_ds, val_ds = dataset.load()
     callbacks = [
-        keras.callbacks.EarlyStopping(monitor="val_loss", patience=20, start_from_epoch=50, verbose=1),
+        keras.callbacks.EarlyStopping(monitor="val_loss", patience=15, start_from_epoch=50, verbose=1),
         keras.callbacks.ModelCheckpoint(monitor="val_segmentation_output_loss", filepath='./output/model_{epoch:02d}_{val_segmentation_output_loss:.4f}.keras', save_best_only=True),
         keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=1, update_freq='epoch'),
         keras.callbacks.CSVLogger("./logs/training.csv", separator=",", append=True),
