@@ -28,9 +28,13 @@ def predict_tflite_model(model_name):
         for output in output_details:
             output_data.append(interpreter.get_tensor(output['index']))
 
-        output = output_data[1][0]
+        output = output_data[0][0]
         output = cv2.normalize(output, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         output = cv2.resize(output, (224, 224))
+
+        class_label = output_data[1][0]
+        cv2.putText(img_show, f"{class_label}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
+
         cv2.imshow("Image", img_show)
         cv2.imshow("Mask", output)
         cv2.waitKey(0)
@@ -64,11 +68,11 @@ def predict_tflite_model_video(model_name):
         for output in output_details:
             output_data.append(interpreter.get_tensor(output['index']))
 
-        output = output_data[1][0]
+        output = output_data[0][0]
         output = cv2.normalize(output, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         output = cv2.resize(output, (224, 224))
 
-        class_label = output_data[0][0]
+        class_label = output_data[1][0]
         cv2.putText(img_show, f"{class_label}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
 
         cv2.imshow("show", output)
@@ -79,8 +83,30 @@ def predict_tflite_model_video(model_name):
 
 def convert_to_tflite(model_name):
     model = keras.models.load_model(f"./saved_model/{model_name}.keras", safe_mode=False)
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+
+    # Define fixed input shape (adjust values to match your model's input)
+    batch_size = 1  # Set your desired batch size
+    height, width, channels = 224, 224, 3  # Example dimensions, change as needed
+    input_shape = (batch_size, height, width, channels)
+    
+    # Create a concrete function with fixed input signature
+    @tf.function(input_signature=[tf.TensorSpec(shape=input_shape, dtype=tf.float32)])
+    def model_inference(inputs):
+        return model(inputs)
+    
+    concrete_func = model_inference.get_concrete_function()
+    
+    # Convert using the concrete function
+    converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete_func])
+
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
+    
+    # Optional: For better compatibility with delegates
+    converter.target_spec.supported_ops = [
+        tf.lite.OpsSet.TFLITE_BUILTINS,
+        tf.lite.OpsSet.SELECT_TF_OPS
+    ]
+    
     tflite_model = converter.convert()
     with open(f"./saved_model/{model_name}.tflite", 'wb') as f:
         f.write(tflite_model)
