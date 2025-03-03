@@ -49,7 +49,7 @@ class DocMaskDataset:
         class_label = labels["classification_output"]
 
         # Random no augmentaion
-        if tf.random.uniform([]) < 0.1:
+        if tf.random.uniform([]) < 0.05:
             mask /= 255.0
             return ({"img_input": img}, {"segmentation_output": mask, "classification_output": class_label})
 

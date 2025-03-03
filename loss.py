@@ -5,7 +5,7 @@ import os
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
 class HybridLossV3(keras.losses.Loss):
-    def __init__(self, alpha=0.7, gamma=2.5, edge_weight=0.3, smooth=1e-6, **kwargs):
+    def __init__(self, alpha=0.7, gamma=2, edge_weight=0.2, smooth=1e-6, **kwargs):
         super().__init__(**kwargs)
         self.alpha = alpha  # Dice vs Focal balance
         self.gamma = gamma  # Focus on hard examples

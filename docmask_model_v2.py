@@ -1,10 +1,10 @@
 import tensorflow as tf
-
 import keras
 import os
 from docmask_dataset import DocMaskDataset
 from utils import cat_model_summary
 from loss import HybridLossV3, HybridLossV2
+from metrics import boundary_iou, boundary_f1
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
@@ -92,17 +92,11 @@ def attention_gate(x, g, filters, compression=2):
     )(psi_f)
     
     alpha = keras.layers.Activation('sigmoid')(psi_f)
-    alpha = keras.layers.Conv2D(
-        1, 1, activation='sigmoid', 
-        kernel_initializer='he_normal'
-    )(alpha)
+    alpha = keras.layers.Conv2D(1, 1, activation='sigmoid', kernel_initializer='he_normal')(alpha)
     
     # Channel-wise scaling
     channel_scale = keras.layers.GlobalAveragePooling2D(keepdims=True)(alpha)
-    channel_scale = keras.layers.Dense(
-        1, activation='relu', 
-        kernel_initializer='he_normal'
-    )(channel_scale)
+    channel_scale = keras.layers.Dense(1, activation='swish', kernel_initializer='he_normal')(channel_scale)
     alpha = keras.layers.Multiply()([alpha, channel_scale])
     
     return keras.layers.Multiply()([x, alpha])
@@ -165,6 +159,24 @@ def aspp_module(inputs, output_stride=16, l2_weight=1e-4):
     
     return x
 
+def dynamic_weighting(x, skip_processed):
+    # Generate multi-scale weights
+    scale1 = keras.layers.Conv2D(1, 1, padding="same", kernel_initializer="he_normal")(x)
+    scale2 = keras.layers.SeparableConv2D(1, 3, dilation_rate=2, padding="same")(x)
+    
+    # Fuse scales
+    skip_weights = keras.layers.Add()([scale1, scale2])
+    skip_weights = keras.layers.BatchNormalization()(skip_weights)
+    skip_weights = keras.layers.Activation("swish")(skip_weights)
+    skip_weights = keras.layers.Activation("sigmoid")(skip_weights)
+    skip_weights = keras.layers.SpatialDropout2D(0.1)(skip_weights)
+    
+    # Apply weights with residual connection
+    weighted = keras.layers.Multiply()([skip_processed, skip_weights])
+    skip_processed = keras.layers.Add()([weighted, skip_processed])  # Residual add
+    
+    return skip_processed
+
 def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     """
     Improved document segmentation and classification model
@@ -190,8 +202,16 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     )
 
     # Unfreeze last few layers for fine-tuning
+    unfreeze_layers = [
+        'expanded_conv_2',
+        'expanded_conv_6', 
+        'expanded_conv_8', 
+        'expanded_conv_10', 
+        'expanded_conv_11', 
+        'expanded_conv_12'
+    ]
     for layer in backbone.layers:
-        if any([kw in layer.name for kw in ['expanded_conv_2', 'expanded_conv_6', 'expanded_conv_8', 'expanded_conv_10', 'expanded_conv_11', 'expanded_conv_12']]):
+        if any([kw in layer.name for kw in unfreeze_layers]):
             layer.trainable = True
         else:
             layer.trainable = False
@@ -217,24 +237,20 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
         stride = (skip.shape[1] // x.shape[1], skip.shape[2] // x.shape[2])
         
         if stride[0] > 1 or stride[1] > 1:
-            x = keras.layers.Conv2DTranspose(
-                filters, 3, strides=stride, padding="same"
-            )(x)
+            x = keras.layers.Conv2DTranspose(filters, 3, strides=stride, padding="same")(x)
         
         # Process skip connection
-        skip_processed = keras.layers.Conv2D(filters, 1, padding="same")(skip)
-        
+        skip_processed = keras.layers.Conv2D(filters, 1, padding="same", kernel_initializer="he_normal")(skip)
+        skip_processed = keras.layers.BatchNormalization()(skip_processed)
+        skip_processed = keras.layers.Activation("swish")(skip_processed)
+        skip_processed = keras.layers.SpatialDropout2D(0.05)(skip_processed)
+
         # Apply attention gate if requested
         if use_attn:
             skip_processed = attention_gate(skip_processed, x, filters)
         
         # Add dynamic weighting based on decoder features
-        skip_weights = keras.layers.Conv2D(
-            1, 1, 
-            activation="sigmoid",  # Values between 0-1
-            kernel_initializer="he_normal"
-        )(x)  # x = current decoder features
-        skip_processed = keras.layers.Multiply()([skip_processed, skip_weights])
+        skip_processed = dynamic_weighting(x, skip_processed)
 
         # Combine features
         x = keras.layers.Concatenate()([x, skip_processed])
@@ -274,61 +290,6 @@ def docmask_model_v2(image_size=224, num_classes=1, use_attn=True):
     
     return model
 
-@keras.saving.register_keras_serializable()
-def boundary_iou(y_true, y_pred, dilation_radius=3):
-    """Calculate Intersection-over-Union for mask boundaries"""
-    # Ensure input is 4D (batch, height, width, channels)
-    y_true = tf.ensure_shape(y_true, (None, None, None, 1))
-    y_pred = tf.ensure_shape(y_pred, (None, None, None, 1))
-
-    # Create 4D erosion kernel [height, width, in_channels, out_channels]
-    kernel = tf.ones((dilation_radius, dilation_radius, 1), dtype=tf.float32)
-
-    # Erosion operations with proper data_format
-    y_true_eroded = tf.nn.erosion2d(
-        value=y_true,
-        filters=kernel,
-        strides=[1, 1, 1, 1],
-        padding='SAME',
-        data_format='NHWC',  # Channels-last format
-        dilations=[1, 1, 1, 1],
-        name='y_true_erosion'
-    )
-
-    y_pred_eroded = tf.nn.erosion2d(
-        value=y_pred,
-        filters=kernel,
-        strides=[1, 1, 1, 1],
-        padding='SAME',
-        data_format='NHWC',  # Channels-last format
-        dilations=[1, 1, 1, 1],
-        name='y_pred_erosion'
-    )
-
-    # Calculate boundary regions
-    y_true_boundary = y_true - y_true_eroded
-    y_pred_boundary = y_pred - y_pred_eroded
-
-    # Compute IoU
-    intersection = tf.reduce_sum(y_true_boundary * y_pred_boundary)
-    union = tf.reduce_sum(y_true_boundary) + tf.reduce_sum(y_pred_boundary) - intersection
-    
-    return (intersection + 1e-6) / (union + 1e-6)
-
-@keras.saving.register_keras_serializable()
-def boundary_f1(y_true, y_pred, threshold=0.5):
-    y_pred_bin = tf.cast(y_pred > threshold, tf.float32)
-    edges_true = tf.image.sobel_edges(y_true)
-    edges_pred = tf.image.sobel_edges(y_pred_bin)
-    
-    tp = tf.reduce_sum(edges_true * edges_pred)
-    fp = tf.reduce_sum(edges_pred) - tp
-    fn = tf.reduce_sum(edges_true) - tp
-    
-    precision = tp / (tp + fp + 1e-6)
-    recall = tp / (tp + fn + 1e-6)
-    return 2 * (precision * recall) / (precision + recall + 1e-6)
-
 def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     """
     Create a complete training pipeline optimized for a small dataset (1000 images)
@@ -344,8 +305,18 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
         "segmentation_output": 1.0,
         "classification_output": 0.5
     }
-    
-    optimizer = keras.optimizers.Adam(learning_rate=0.0001)
+
+    train_size = 1500 * 0.8 // batch_size
+    total_steps = epoch * train_size
+    warmup_steps = int(0.1 * total_steps)
+    decay_steps = total_steps - warmup_steps 
+    lr_scheduler = keras.optimizers.schedules.CosineDecay(
+        initial_learning_rate=1e-4,
+        warmup_steps=warmup_steps,
+        decay_steps=decay_steps,
+        alpha=0.01
+    )
+    optimizer = keras.optimizers.Adam(learning_rate=lr_scheduler, clipnorm=1.0)
     
     # Metrics
     if use_simple_metrics:
@@ -386,10 +357,9 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     train_ds, val_ds = dataset.load()
     callbacks = [
         keras.callbacks.EarlyStopping(monitor="val_loss", patience=20, start_from_epoch=50, verbose=1),
-        keras.callbacks.ModelCheckpoint(monitor="val_loss", filepath='./output/model_{epoch:02d}_{val_loss:.4f}.keras', save_best_only=True),
+        keras.callbacks.ModelCheckpoint(monitor="val_segmentation_output_loss", filepath='./output/model_{epoch:02d}_{val_segmentation_output_loss:.4f}.keras', save_best_only=True),
         keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=1, update_freq='epoch'),
         keras.callbacks.CSVLogger("./logs/training.csv", separator=",", append=True),
-        keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, verbose=1, min_lr=1e-6)
     ]
     model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks, verbose=1)
     model.save("./output/final_model.keras")
