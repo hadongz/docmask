@@ -33,7 +33,7 @@ def debug_model(model):
         class_pred = output[1][0].numpy()
         cv2.putText(image, f"{class_pred}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
 
-        segmentation_loss = HybridLossV3()
+        segmentation_loss = HybridLossV2()
         segment_true = y["segmentation_output"]
         classification_true = y["classification_output"]
         segment_pred = output[0]
@@ -71,7 +71,7 @@ def test_model(model):
         class_pred = output[1][0].numpy()
         cv2.putText(image, f"{class_pred}", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
 
-        segmentation_loss = HybridLossV3()
+        segmentation_loss = HybridLossV2()
         segment_true = y["segmentation_output"]
         classification_true = y["classification_output"]
         segment_pred = output[0]

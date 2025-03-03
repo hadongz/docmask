@@ -4,8 +4,36 @@ import os
 
 os.environ["KERAS_BACKEND"] = "tensorflow"
 
+class HybridLossV4(keras.losses.Loss):
+    def __init__(self, alpha=0.7, bet=0.3, gamma=2.0, smooth=1e-7, **kwargs):
+        super().__init__(**kwargs)
+        self.alpha = alpha
+        self.bet = bet
+        self.gamma = gamma
+        self.smooth = smooth
+
+    def distance_transform_loss(self, y_true, y_pred):
+        return
+
+    def call(self, y_true, y_pred):
+        return 
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "alpha": self.alpha,
+            "beta": self.beta,
+            "gamma": self.gamma,
+            "smooth": self.smooth
+        })
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+
 class HybridLossV3(keras.losses.Loss):
-    def __init__(self, alpha=0.7, gamma=2, edge_weight=0.2, smooth=1e-6, **kwargs):
+    def __init__(self, alpha=0.7, gamma=2.0, edge_weight=0.2, smooth=1e-6, **kwargs):
         super().__init__(**kwargs)
         self.alpha = alpha  # Dice vs Focal balance
         self.gamma = gamma  # Focus on hard examples

@@ -358,7 +358,7 @@ def train_v2(model, batch_size=16, epoch=100, use_simple_metrics=True):
     callbacks = [
         keras.callbacks.EarlyStopping(monitor="val_loss", patience=15, start_from_epoch=50, verbose=1),
         keras.callbacks.ModelCheckpoint(monitor="val_segmentation_output_loss", filepath='./output/model_{epoch:02d}_{val_segmentation_output_loss:.4f}.keras', save_best_only=True),
-        keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=1, update_freq='epoch'),
+        keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=1, update_freq='epoch', write_graph=True, write_images=True),
         keras.callbacks.CSVLogger("./logs/training.csv", separator=",", append=True),
     ]
     model.fit(train_ds, validation_data=val_ds, epochs=epoch, callbacks=callbacks, verbose=1)
