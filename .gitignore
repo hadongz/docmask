@@ -10,7 +10,6 @@ parquet_images/
 parquets/
 temp_train_datasets/
 receipt_datasets/
-receipt_masks/
 
 ### macOS ###
 # General
